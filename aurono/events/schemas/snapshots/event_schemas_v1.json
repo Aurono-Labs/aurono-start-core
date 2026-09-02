@@ -1,0 +1,440 @@
+{
+  "BuyDecisionTriggered": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "decision",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "observed_change_pct": "Decimal",
+      "reference_price": "Decimal",
+      "trigger_threshold": "Decimal"
+    },
+    "payload_optional": {}
+  },
+  "CapitalReserved": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "capital",
+    "envelope": {
+      "forbidden": [],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "amount": "Decimal",
+      "currency": "str"
+    },
+    "payload_optional": {}
+  },
+  "DecisionRejected": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "decision",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [
+        "symbol",
+        "timeframe"
+      ],
+      "required": [
+        "strategy_id",
+        "strategy_version_id"
+      ]
+    },
+    "payload": {
+      "reason": "str"
+    },
+    "payload_optional": {
+      "details": "dict"
+    }
+  },
+  "InventoryIncreased": {
+    "actor_types": [
+      "exchange"
+    ],
+    "domain": "inventory",
+    "envelope": {
+      "forbidden": [],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "symbol",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "quantity": "Decimal"
+    },
+    "payload_optional": {}
+  },
+  "KillSwitchActivated": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "system",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [
+        "strategy_id"
+      ],
+      "required": []
+    },
+    "payload": {
+      "reason": "str"
+    },
+    "payload_optional": {}
+  },
+  "MarketCandleClosed": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "market",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id",
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "exchange",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "candle_timestamp": "str",
+      "close": "Decimal",
+      "high": "Decimal",
+      "low": "Decimal",
+      "open": "Decimal",
+      "volume": "Decimal"
+    },
+    "payload_optional": {}
+  },
+  "MarketDataUnavailable": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "market",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id",
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "exchange",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "reason": "str"
+    },
+    "payload_optional": {}
+  },
+  "NoActionDecision": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "decision",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "observed_change_pct": "Decimal"
+    },
+    "payload_optional": {}
+  },
+  "OrderAcceptedByExchange": {
+    "actor_types": [
+      "exchange"
+    ],
+    "domain": "execution",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id"
+      ],
+      "optional": [],
+      "required": [
+        "exchange",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "external_order_id": "str"
+    },
+    "payload_optional": {}
+  },
+  "OrderRejectedByExchange": {
+    "actor_types": [
+      "exchange"
+    ],
+    "domain": "execution",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id"
+      ],
+      "optional": [],
+      "required": [
+        "exchange",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "reason": "str"
+    },
+    "payload_optional": {}
+  },
+  "OrderSubmitted": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "execution",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id"
+      ],
+      "optional": [],
+      "required": [
+        "exchange",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "order_type": "str"
+    },
+    "payload_optional": {}
+  },
+  "SellDecisionTriggered": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "decision",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "observed_change_pct": "Decimal",
+      "reference_price": "Decimal",
+      "trigger_threshold": "Decimal"
+    },
+    "payload_optional": {}
+  },
+  "StrategyActivated": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "strategy",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id"
+      ]
+    },
+    "payload": {},
+    "payload_optional": {}
+  },
+  "StrategyArchived": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "strategy",
+    "envelope": {
+      "forbidden": [
+        "strategy_version_id",
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id"
+      ]
+    },
+    "payload": {},
+    "payload_optional": {}
+  },
+  "StrategyCreated": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "strategy",
+    "envelope": {
+      "forbidden": [
+        "strategy_version_id",
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id"
+      ]
+    },
+    "payload": {
+      "name": "str"
+    },
+    "payload_optional": {}
+  },
+  "StrategyEvaluationStarted": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "decision",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "timeframe"
+      ]
+    },
+    "payload": {
+      "candle_timestamp": "str"
+    },
+    "payload_optional": {}
+  },
+  "StrategyPaused": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "strategy",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [
+        "strategy_version_id"
+      ],
+      "required": [
+        "strategy_id"
+      ]
+    },
+    "payload": {},
+    "payload_optional": {
+      "reason": "str"
+    }
+  },
+  "StrategyVersionCreated": {
+    "actor_types": [
+      "system",
+      "user"
+    ],
+    "domain": "strategy",
+    "envelope": {
+      "forbidden": [
+        "trade_id"
+      ],
+      "optional": [],
+      "required": [
+        "strategy_id",
+        "strategy_version_id"
+      ]
+    },
+    "payload": {
+      "parameters": "dict",
+      "previous_version_id": [
+        "str",
+        "NoneType"
+      ]
+    },
+    "payload_optional": {}
+  },
+  "SystemStartup": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "system",
+    "envelope": {
+      "forbidden": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "timeframe",
+        "trade_id"
+      ],
+      "optional": [],
+      "required": []
+    },
+    "payload": {},
+    "payload_optional": {}
+  },
+  "TradeIntentCreated": {
+    "actor_types": [
+      "system"
+    ],
+    "domain": "execution",
+    "envelope": {
+      "forbidden": [],
+      "optional": [
+        "exchange"
+      ],
+      "required": [
+        "strategy_id",
+        "strategy_version_id",
+        "symbol",
+        "trade_id"
+      ]
+    },
+    "payload": {
+      "intended_price": "Decimal",
+      "intended_quantity": "Decimal",
+      "side": "str"
+    },
+    "payload_optional": {}
+  }
+}
