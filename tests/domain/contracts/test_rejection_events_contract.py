@@ -41,13 +41,31 @@ DEFAULT_SPEC = StrategySpec(
     sell_eur=Decimal("100"),
 )
 
+BUY_DISABLED_SPEC = StrategySpec(
+    symbol="BTC-EUR",
+    timeframe="1w",
+    buy_drop_pct=Decimal("10"),
+    sell_rise_pct=Decimal("10"),
+    buy_eur=Decimal("0"),
+    sell_eur=Decimal("100"),
+)
+
+SELL_DISABLED_SPEC = StrategySpec(
+    symbol="BTC-EUR",
+    timeframe="1w",
+    buy_drop_pct=Decimal("10"),
+    sell_rise_pct=Decimal("10"),
+    buy_eur=Decimal("100"),
+    sell_eur=Decimal("0"),
+)
+
 OCCURRED_AT = datetime(2026, 1, 1)
 
 
-def _eval_and_emit(*, market, portfolio):
+def _eval_and_emit(*, market, portfolio, spec=DEFAULT_SPEC):
     """Run the full pipeline: eval → outcome → domain event."""
     decision = evaluate_strategy(
-        spec=DEFAULT_SPEC,
+        spec=spec,
         market=market,
         portfolio=portfolio,
         ctx=EvalContext(asof=OCCURRED_AT),
@@ -71,38 +89,57 @@ REJECTION_SCENARIOS = [
         reasons.INVALID_MARKET_DATA,
         MarketWindow(prev_close=Decimal("-1"), last_close=Decimal("100")),
         PortfolioState(free_eur=Decimal("1000"), asset_units=Decimal("0"), acb_price=None),
+        DEFAULT_SPEC,
         id="INVALID_MARKET_DATA",
     ),
     pytest.param(
         reasons.CAPITAL_INSUFFICIENT,
         MarketWindow(prev_close=Decimal("100"), last_close=Decimal("85")),  # -15% → buy trigger
         PortfolioState(free_eur=Decimal("10"), asset_units=Decimal("0"), acb_price=None),
+        DEFAULT_SPEC,
         id="CAPITAL_INSUFFICIENT",
     ),
     pytest.param(
         reasons.INVENTORY_INSUFFICIENT,
         MarketWindow(prev_close=Decimal("100"), last_close=Decimal("115")),  # +15% → sell trigger
         PortfolioState(free_eur=Decimal("0"), asset_units=Decimal("0"), acb_price=None),
+        DEFAULT_SPEC,
         id="INVENTORY_INSUFFICIENT",
     ),
     pytest.param(
         reasons.NO_ACB,
         MarketWindow(prev_close=Decimal("100"), last_close=Decimal("115")),  # +15% → sell trigger
         PortfolioState(free_eur=Decimal("0"), asset_units=Decimal("2"), acb_price=None),
+        DEFAULT_SPEC,
         id="NO_ACB",
     ),
     pytest.param(
         reasons.BELOW_ACB,
         MarketWindow(prev_close=Decimal("100"), last_close=Decimal("115")),  # +15% → sell trigger
         PortfolioState(free_eur=Decimal("0"), asset_units=Decimal("2"), acb_price=Decimal("200")),
+        DEFAULT_SPEC,
         id="BELOW_ACB",
+    ),
+    pytest.param(
+        reasons.BUY_DISABLED,
+        MarketWindow(prev_close=Decimal("100"), last_close=Decimal("85")),  # -15% → buy trigger
+        PortfolioState(free_eur=Decimal("1000"), asset_units=Decimal("0"), acb_price=None),
+        BUY_DISABLED_SPEC,
+        id="BUY_DISABLED",
+    ),
+    pytest.param(
+        reasons.SELL_DISABLED,
+        MarketWindow(prev_close=Decimal("100"), last_close=Decimal("115")),  # +15% → sell trigger
+        PortfolioState(free_eur=Decimal("0"), asset_units=Decimal("2"), acb_price=Decimal("100")),
+        SELL_DISABLED_SPEC,
+        id="SELL_DISABLED",
     ),
 ]
 
 
-@pytest.mark.parametrize("expected_reason,market,portfolio", REJECTION_SCENARIOS)
-def test_rejection_emits_correct_event(expected_reason, market, portfolio):
-    event = _eval_and_emit(market=market, portfolio=portfolio)
+@pytest.mark.parametrize("expected_reason,market,portfolio,spec", REJECTION_SCENARIOS)
+def test_rejection_emits_correct_event(expected_reason, market, portfolio, spec):
+    event = _eval_and_emit(market=market, portfolio=portfolio, spec=spec)
 
     assert isinstance(event, StrategyDecisionRejected), (
         f"Expected StrategyDecisionRejected for {expected_reason}, "
@@ -112,9 +149,9 @@ def test_rejection_emits_correct_event(expected_reason, market, portfolio):
     assert isinstance(event.metrics, dict)
 
 
-@pytest.mark.parametrize("expected_reason,market,portfolio", REJECTION_SCENARIOS)
-def test_rejection_event_has_required_fields(expected_reason, market, portfolio):
-    event = _eval_and_emit(market=market, portfolio=portfolio)
+@pytest.mark.parametrize("expected_reason,market,portfolio,spec", REJECTION_SCENARIOS)
+def test_rejection_event_has_required_fields(expected_reason, market, portfolio, spec):
+    event = _eval_and_emit(market=market, portfolio=portfolio, spec=spec)
 
     # All domain events must have these
     assert event.strategy_id == 1

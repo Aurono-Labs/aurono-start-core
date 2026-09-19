@@ -65,7 +65,7 @@ class OrderSized(DomainEvent):
 
     # provenance
     price_source: str             # "last_trade" | "mid_price"
-    priced_at_utc: datetime       # timestamp from LivePrice
+    priced_at_utc: datetime       # timestamp the price was captured at
 
 @dataclass(frozen=True)
 class ExecutionAborted(DomainEvent):

@@ -177,6 +177,6 @@ def test_open_designated_scope_is_not_empty():
     parametrized test above would silently pass with zero cases and this
     whole file would stop meaning anything."""
     assert len(_FILES) >= 40, (
-        f"Expected the open-designated scope to contain ~43 files, found {len(_FILES)} — "
+        f"Expected the open-designated scope to contain ~48 files, found {len(_FILES)} — "
         f"OPEN_DESIGNATED_DIRS/OPEN_DESIGNATED_FILES may be out of date."
     )

@@ -16,6 +16,10 @@ def test_reason_codes_are_canonical():
         "COOLDOWN_ACTIVE",
         "BELOW_MIN_NOTIONAL",
         "BELOW_MIN_ORDER_SIZE",
+        "RSI_NOT_OVERSOLD",
+        "RSI_NOT_OVERBOUGHT",
+        "BUY_DISABLED",
+        "SELL_DISABLED",
     }
 
     actual = {

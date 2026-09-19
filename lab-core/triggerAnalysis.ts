@@ -13,6 +13,8 @@
  * side, and lab-core/__tests__ for this file's own standalone tests).
  */
 
+import { rsi } from "./indicators";
+
 // ── Types ──
 
 export interface CandleRecord {
@@ -38,6 +40,9 @@ export interface TriggerAnalysisParams {
   timeframeMinutes?: number; // Minutes per candle (for cooldown computation)
   initialAssetUnits?: number; // Starting position (units already held)
   initialAcbPrice?: number; // Starting average cost basis per unit
+  rsiPeriod?: number; // e.g. 14 — unset disables the RSI gate entirely
+  rsiMaxForBuy?: number; // buy also requires rsi <= this
+  rsiMinForSell?: number; // sell also requires rsi >= this
 }
 
 export type TriggerAction =
@@ -46,11 +51,15 @@ export type TriggerAction =
   | "BUY_IGNORED_NO_CAPITAL"
   | "BUY_IGNORED_COOLDOWN"
   | "BUY_IGNORED_MIN_NOTIONAL"
+  | "BUY_IGNORED_RSI"
+  | "BUY_IGNORED_DISABLED"
   | "SELL_IGNORED_NO_INVENTORY"
   | "SELL_IGNORED_BELOW_ACB"
   | "SELL_IGNORED_MIN_POSITION"
   | "SELL_IGNORED_COOLDOWN"
   | "SELL_IGNORED_MIN_NOTIONAL"
+  | "SELL_IGNORED_RSI"
+  | "SELL_IGNORED_DISABLED"
   | "BUY_CANCELLED"
   | "SELL_CANCELLED"
   | "HOLD";
@@ -70,6 +79,9 @@ export interface CandleAnalysisRow {
   // values instead of the scalar props (Simulate continues to use scalars).
   activeBuyThreshold?: number;   // negative (e.g. -5 for a 5% drop)
   activeSellThreshold?: number;  // positive (e.g. +3 for a 3% rise)
+  // RSI at this candle — only set when the strategy has rsiPeriod configured.
+  // null for the warm-up period (fewer than rsiPeriod prior closes).
+  rsi?: number | null;
 }
 
 export interface TriggerAnalysisResult {
@@ -90,6 +102,10 @@ export interface TriggerAnalysisResult {
   sellIgnoredMinPosition: number;
   buyIgnoredCooldown: number;
   sellIgnoredCooldown: number;
+  buyIgnoredRsi: number;
+  sellIgnoredRsi: number;
+  buyIgnoredDisabled: number;
+  sellIgnoredDisabled: number;
   holdCount: number;
 
   // Capital safety
@@ -111,6 +127,16 @@ export interface TriggerAnalysisResult {
   finalFreeEur: number;
   finalAssetUnits: number;
   finalAcbPrice: number | null;
+}
+
+// True cost-basis breach vs. a fee-margin near-miss: BELOW_ACB (backend) /
+// SELL_IGNORED_BELOW_ACB (here) fires on close < acbPrice*(1+margin%), a
+// strict superset of the raw close < acbPrice check. This isolates which
+// side of that superset a HOLD landed on, so tooltip/summary copy can say
+// "below ACB" only when it's literally true (never for the near-miss case —
+// see FT-SELLFLOOR-01's fix for why that distinction matters).
+export function sellBelowRawAcb(close: number, acbPrice: number | null): boolean {
+  return acbPrice != null && close < acbPrice;
 }
 
 export interface SigmaSuggestion {
@@ -180,6 +206,14 @@ export function runTriggerSimulation(
     sellSigma,
   );
 
+  // RSI condition (optional) — computed once, aligned 1:1 with `candles`
+  // (index i in rsiSeries corresponds to candles[i], same as the rsi()
+  // helper's own null-padded shape). Mirrors aurono/domain/strategy_eval.py.
+  const rsiPeriod = params.rsiPeriod ?? 0;
+  const rsiSeries: (number | null)[] = rsiPeriod > 0
+    ? rsi(candles.map((c) => c.close), rsiPeriod)
+    : [];
+
   // State — optionally start with existing position
   const startUnits = params.initialAssetUnits ?? 0;
   const startAcb = params.initialAcbPrice ?? 0;
@@ -206,6 +240,10 @@ export function runTriggerSimulation(
   let sellIgnoredMinPosition = 0;
   let buyIgnoredCooldown = 0;
   let sellIgnoredCooldown = 0;
+  let buyIgnoredRsi = 0;
+  let sellIgnoredRsi = 0;
+  let buyIgnoredDisabled = 0;
+  let sellIgnoredDisabled = 0;
   let holdCount = 0;
 
   // Cooldown state: track last intent timestamps (ms)
@@ -237,6 +275,7 @@ export function runTriggerSimulation(
     assetUnits,
     acbPrice: acbPrice(),
     netBuySaldo,
+    rsi: rsiPeriod > 0 ? (rsiSeries[0] ?? null) : null,
   });
 
   for (let i = 1; i < candles.length; i++) {
@@ -267,94 +306,132 @@ export function runTriggerSimulation(
 
     const candleTs = candles[i].timestamp_ms;
 
+    // RSI condition (optional) — a condition gates the trigger, so it's
+    // checked first, before cooldown, mirroring aurono/domain/strategy_eval.py.
+    const currentRsi = rsiPeriod > 0 ? (rsiSeries[i] ?? null) : null;
+    const rsiBlocksBuy = rsiPeriod > 0 && params.rsiMaxForBuy !== undefined &&
+      (currentRsi === null || currentRsi > params.rsiMaxForBuy);
+    const rsiBlocksSell = rsiPeriod > 0 && params.rsiMinForSell !== undefined &&
+      (currentRsi === null || currentRsi < params.rsiMinForSell);
+
     // BUY check (price dropped below threshold)
     if (changePct <= buyThresholdPct) {
-      // Signal-level tracking (unlimited capital assumption)
-      signalNetSaldo += 1;
-      if (signalNetSaldo > maxSignalNetBuys) maxSignalNetBuys = signalNetSaldo;
-
-      // Cooldown check (before capital check)
-      if (!cooldownOk("buy", candleTs)) {
-        buyIgnoredCooldown += 1;
-        action = "BUY_IGNORED_COOLDOWN";
-      } else if (freeEur >= buyEur) {
-        // Execute BUY — fee reduces units received
-        const fee = buyEur * (feePct / 100);
-        const effectiveEur = buyEur * feeMultiplier;
-        const units = close > 0 ? effectiveEur / close : 0;
-        freeEur -= buyEur;
-        assetUnits += units;
-        totalCost += effectiveEur; // ACB based on what actually bought assets
-        totalFeesEur += fee;
-        totalVolumeEur += buyEur;
-        netBuySaldo += 1;
-        buyExecuted += 1;
-        action = "BUY_EXECUTED";
-        lastBuyTs = candleTs;
+      // Side-disabled check — before signal tracking: a zero buyEur means
+      // this side can never trade, so it isn't a real signal at all, not
+      // just a blocked one. Mirrors strategy_eval.py's ordering (checked
+      // before RSI/cooldown/everything else in the branch).
+      if (buyEur <= 0) {
+        buyIgnoredDisabled += 1;
+        action = "BUY_IGNORED_DISABLED";
       } else {
-        buyIgnoredNoCapital += 1;
-        action = "BUY_IGNORED_NO_CAPITAL";
-      }
+        // Signal-level tracking (unlimited capital assumption)
+        signalNetSaldo += 1;
+        if (signalNetSaldo > maxSignalNetBuys) maxSignalNetBuys = signalNetSaldo;
 
-      // Streak tracking (all BUY signals)
-      currentBuyStreak += 1;
-      if (currentSellStreak > maxSellStreakBeforeBuy) {
-        maxSellStreakBeforeBuy = currentSellStreak;
+        // RSI check (before cooldown)
+        if (rsiBlocksBuy) {
+          buyIgnoredRsi += 1;
+          action = "BUY_IGNORED_RSI";
+        } else if (!cooldownOk("buy", candleTs)) {
+          buyIgnoredCooldown += 1;
+          action = "BUY_IGNORED_COOLDOWN";
+        } else if (freeEur >= buyEur) {
+          // Execute BUY — fee reduces units received
+          const fee = buyEur * (feePct / 100);
+          const effectiveEur = buyEur * feeMultiplier;
+          const units = close > 0 ? effectiveEur / close : 0;
+          freeEur -= buyEur;
+          assetUnits += units;
+          totalCost += effectiveEur; // ACB based on what actually bought assets
+          totalFeesEur += fee;
+          totalVolumeEur += buyEur;
+          netBuySaldo += 1;
+          buyExecuted += 1;
+          action = "BUY_EXECUTED";
+          lastBuyTs = candleTs;
+        } else {
+          buyIgnoredNoCapital += 1;
+          action = "BUY_IGNORED_NO_CAPITAL";
+        }
+
+        // Streak tracking (all BUY signals)
+        currentBuyStreak += 1;
+        if (currentSellStreak > maxSellStreakBeforeBuy) {
+          maxSellStreakBeforeBuy = currentSellStreak;
+        }
+        currentSellStreak = 0;
       }
-      currentSellStreak = 0;
     }
     // SELL check (price rose above threshold)
     else if (changePct >= sellThresholdPct) {
-      // Signal-level tracking
-      signalNetSaldo -= 1;
-
-      if (!cooldownOk("sell", candleTs)) {
-        sellIgnoredCooldown += 1;
-        action = "SELL_IGNORED_COOLDOWN";
-      } else if (assetUnits <= 0) {
-        sellIgnoredNoInventory += 1;
-        action = "SELL_IGNORED_NO_INVENTORY";
+      // Side-disabled check — mirrors the buy side above.
+      if (sellEur <= 0) {
+        sellIgnoredDisabled += 1;
+        action = "SELL_IGNORED_DISABLED";
       } else {
-        const currentAcb = acbPrice();
-        if (currentAcb !== null && close < currentAcb) {
-          sellIgnoredBelowAcb += 1;
-          action = "SELL_IGNORED_BELOW_ACB";
-        } else if (minPositionUnits > 0 && close > 0) {
-          const wouldSell = Math.min(sellEur / close, assetUnits);
-          if (assetUnits - wouldSell < minPositionUnits) {
-            sellIgnoredMinPosition += 1;
-            action = "SELL_IGNORED_MIN_POSITION";
+        // Signal-level tracking
+        signalNetSaldo -= 1;
+
+        // RSI check (before cooldown), mirrors the buy side above
+        if (rsiBlocksSell) {
+          sellIgnoredRsi += 1;
+          action = "SELL_IGNORED_RSI";
+        } else if (!cooldownOk("sell", candleTs)) {
+          sellIgnoredCooldown += 1;
+          action = "SELL_IGNORED_COOLDOWN";
+        } else if (assetUnits <= 0) {
+          sellIgnoredNoInventory += 1;
+          action = "SELL_IGNORED_NO_INVENTORY";
+        } else {
+          const currentAcb = acbPrice();
+          // Fee-aware floor: a sell exactly at cost still loses the
+          // round-trip fee. Margin derived from the Lab's own feePct (2x =
+          // buy fee + sell fee) rather than a separate input — at the
+          // default feePct=0.25 this equals the backend's default 0.5%
+          // min_sell_margin_pct.
+          const sellFloor = currentAcb !== null
+            ? currentAcb * (1 + (2 * feePct) / 100)
+            : null;
+          if (sellFloor !== null && close < sellFloor) {
+            sellIgnoredBelowAcb += 1;
+            action = "SELL_IGNORED_BELOW_ACB";
+          } else if (minPositionUnits > 0 && close > 0) {
+            const wouldSell = Math.min(sellEur / close, assetUnits);
+            if (assetUnits - wouldSell < minPositionUnits) {
+              sellIgnoredMinPosition += 1;
+              action = "SELL_IGNORED_MIN_POSITION";
+            }
+          }
+
+          if (action === "HOLD") {
+            // Execute SELL — sell sellEur worth of units, fee reduces proceeds
+            const unitsToSell = close > 0 ? Math.min(sellEur / close, assetUnits) : 0;
+            const grossProceeds = unitsToSell * close;
+            const fee = grossProceeds * (feePct / 100);
+            const proceeds = grossProceeds * feeMultiplier;
+
+            // Reduce cost proportionally (ACB stays constant)
+            if (assetUnits > 0) {
+              totalCost -= totalCost * (unitsToSell / assetUnits);
+            }
+            assetUnits -= unitsToSell;
+            freeEur += proceeds;
+            totalFeesEur += fee;
+            totalVolumeEur += grossProceeds;
+            netBuySaldo -= 1;
+            sellExecuted += 1;
+            action = "SELL_EXECUTED";
+            lastSellTs = candleTs;
           }
         }
 
-        if (action === "HOLD") {
-          // Execute SELL — sell sellEur worth of units, fee reduces proceeds
-          const unitsToSell = close > 0 ? Math.min(sellEur / close, assetUnits) : 0;
-          const grossProceeds = unitsToSell * close;
-          const fee = grossProceeds * (feePct / 100);
-          const proceeds = grossProceeds * feeMultiplier;
-
-          // Reduce cost proportionally (ACB stays constant)
-          if (assetUnits > 0) {
-            totalCost -= totalCost * (unitsToSell / assetUnits);
-          }
-          assetUnits -= unitsToSell;
-          freeEur += proceeds;
-          totalFeesEur += fee;
-          totalVolumeEur += grossProceeds;
-          netBuySaldo -= 1;
-          sellExecuted += 1;
-          action = "SELL_EXECUTED";
-          lastSellTs = candleTs;
+        // Streak tracking for SELL signals (all outcomes)
+        currentSellStreak += 1;
+        if (currentBuyStreak > maxBuyStreakBeforeSell) {
+          maxBuyStreakBeforeSell = currentBuyStreak;
         }
+        currentBuyStreak = 0;
       }
-
-      // Streak tracking for SELL signals (all outcomes)
-      currentSellStreak += 1;
-      if (currentBuyStreak > maxBuyStreakBeforeSell) {
-        maxBuyStreakBeforeSell = currentBuyStreak;
-      }
-      currentBuyStreak = 0;
     } else {
       holdCount += 1;
     }
@@ -372,6 +449,7 @@ export function runTriggerSimulation(
       assetUnits,
       acbPrice: acbPrice(),
       netBuySaldo,
+      rsi: currentRsi,
     });
   }
 
@@ -399,6 +477,10 @@ export function runTriggerSimulation(
     sellIgnoredMinPosition,
     buyIgnoredCooldown,
     sellIgnoredCooldown,
+    buyIgnoredRsi,
+    sellIgnoredRsi,
+    buyIgnoredDisabled,
+    sellIgnoredDisabled,
     holdCount,
     maxNetBuys: maxSignalNetBuys,
     theoreticalEurRequired,
@@ -515,6 +597,10 @@ function emptyResult(
     sellIgnoredMinPosition: 0,
     buyIgnoredCooldown: 0,
     sellIgnoredCooldown: 0,
+    buyIgnoredRsi: 0,
+    sellIgnoredRsi: 0,
+    buyIgnoredDisabled: 0,
+    sellIgnoredDisabled: 0,
     holdCount: 0,
     maxNetBuys: 0,
     theoreticalEurRequired: 0,
@@ -683,5 +769,85 @@ export function computeBenchmarkSummary(
     strategyUnits: result.finalAssetUnits,
     dcaUnits: finalDcaUnits,
     holdUnits: finalHoldUnits,
+  };
+}
+
+export interface UndersizedSides {
+  buyUndersized: boolean;
+  sellUndersized: boolean;
+}
+
+/**
+ * Estimates, at the given reference price, whether the configured buy/sell
+ * EUR amounts would size below the exchange's real minimum order quantity.
+ * An approximation (price moves; the exchange re-checks at trade time) —
+ * used only for an advisory warning, never to block anything.
+ *
+ * A side set to exactly 0 is disabled (a documented valid one-sided
+ * strategy, not an accidentally-small amount) — never flagged as
+ * undersized, since 0 / price is always < any positive minimum and would
+ * otherwise warn on every disabled side, every time.
+ */
+export function estimateUndersizedSides(
+  buyEur: number,
+  sellEur: number,
+  referencePrice: number,
+  minOrderBaseUnits: number | null,
+): UndersizedSides {
+  if (!minOrderBaseUnits || minOrderBaseUnits <= 0 || referencePrice <= 0) {
+    return { buyUndersized: false, sellUndersized: false };
+  }
+  return {
+    buyUndersized: buyEur > 0 && buyEur / referencePrice < minOrderBaseUnits,
+    sellUndersized: sellEur > 0 && sellEur / referencePrice < minOrderBaseUnits,
+  };
+}
+
+export interface RsiConfigIssue {
+  periodTooShort: boolean;
+  buyOutOfRange: boolean;
+  sellOutOfRange: boolean;
+  // Soft heads-up, not a hard problem: a valid (0-100) threshold on the
+  // "wrong" side of neutral (50) barely filters anything — e.g. a buy
+  // ceiling of 90 lets almost every price dip through, since RSI is below
+  // 90 most of the time. Not capped/blocked (legitimate strategies do use
+  // tighter or looser bands than the 30/70 default), just flagged.
+  buyAboveNeutral: boolean;
+  sellBelowNeutral: boolean;
+}
+
+/**
+ * Flags an RSI configuration that can never do what it looks like it does.
+ * RSI is mathematically bounded to 0-100, so a threshold outside that range
+ * makes the gate a permanent no-op (e.g. rsiMaxForBuy=120 always passes,
+ * silently — the strategy/simulation would look RSI-confirmed without RSI
+ * ever actually blocking anything). A period below 2 can't compute a
+ * meaningful average gain/loss either. Same 0-100/≥2 bounds the submit-time
+ * validators (CreateStrategy.tsx, strategyParamsFormHelpers.ts) already
+ * enforce — this just surfaces the same check on surfaces with no submit
+ * step (Lab Simulate, Quick Test), where those validators never run.
+ */
+export function checkRsiConfig(
+  rsiPeriod: number,
+  rsiMaxForBuy: number,
+  rsiMinForSell: number,
+): RsiConfigIssue {
+  if (rsiPeriod <= 0) {
+    return {
+      periodTooShort: false,
+      buyOutOfRange: false,
+      sellOutOfRange: false,
+      buyAboveNeutral: false,
+      sellBelowNeutral: false,
+    };
+  }
+  const buyOutOfRange = !(rsiMaxForBuy >= 0 && rsiMaxForBuy <= 100);
+  const sellOutOfRange = !(rsiMinForSell >= 0 && rsiMinForSell <= 100);
+  return {
+    periodTooShort: rsiPeriod < 2,
+    buyOutOfRange,
+    sellOutOfRange,
+    buyAboveNeutral: !buyOutOfRange && rsiMaxForBuy > 50,
+    sellBelowNeutral: !sellOutOfRange && rsiMinForSell < 50,
   };
 }

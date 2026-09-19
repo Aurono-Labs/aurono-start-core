@@ -4,9 +4,13 @@ import {
   runTriggerSimulation,
   suggestAdjustments,
   computeEquityCurve,
+  estimateUndersizedSides,
+  checkRsiConfig,
+  sellBelowRawAcb,
   type TriggerAnalysisParams,
   type CandleRecord,
 } from "../triggerAnalysis";
+import { rsi } from "../indicators";
 
 // Helper: generate candles from close prices
 function makeCandles(closes: number[], startMs = 1000000): CandleRecord[] {
@@ -98,6 +102,71 @@ describe("runTriggerSimulation", () => {
     expect(result.sellIgnoredBelowAcb + result.sellExecuted + result.sellIgnoredNoInventory).toBeGreaterThanOrEqual(0);
   });
 
+  it("ignores SELL between raw ACB and the fee-margin floor", () => {
+    // Buy at 80 (ACB=80), then a signal at 80.2 — above raw ACB but below
+    // the default fee-margin floor (80 * 1.005 = 80.4 at feePct=0.25, i.e.
+    // 2x the fee for a round trip). Pre-fix this would have wrongly
+    // executed since 80.2 > 80 (raw ACB comparison had no margin at all).
+    const prices = [100, 80, 80.2];
+    const result = runTriggerSimulation({
+      candles: makeCandles(prices),
+      buySigma: 0.1,
+      sellSigma: 0.1,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      feePct: 0.25,
+    });
+    expect(result.sellIgnoredBelowAcb).toBe(1);
+    expect(result.sellExecuted).toBe(0);
+  });
+
+  it("executes SELL once price clears the fee-margin floor", () => {
+    // Buy at 80 (ACB=80), then a clear rise to 85 — well above the 80.4
+    // margin floor.
+    const prices = [100, 80, 85];
+    const result = runTriggerSimulation({
+      candles: makeCandles(prices),
+      buySigma: 0.1,
+      sellSigma: 0.1,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      feePct: 0.25,
+    });
+    expect(result.sellExecuted).toBe(1);
+    expect(result.sellIgnoredBelowAcb).toBe(0);
+  });
+
+  it("BUY side disabled when buyEur is 0 — never executes, never counted as a signal", () => {
+    const result = runTriggerSimulation({
+      ...baseParams,
+      buyEur: 0,
+    });
+    expect(result.buyExecuted).toBe(0);
+    expect(result.buyIgnoredDisabled).toBeGreaterThan(0);
+    expect(result.maxNetBuys).toBe(0);
+  });
+
+  it("SELL side disabled when sellEur is 0 — checked before inventory, never executes", () => {
+    // Rising prices so a sell trigger fires; buySigma high enough that no
+    // buys happen first, so this isolates the disabled-side check from the
+    // no-inventory check that would otherwise also block the same signal.
+    const risingCandles = makeCandles([100, 110, 121, 133, 146, 161]);
+    const result = runTriggerSimulation({
+      candles: risingCandles,
+      buySigma: 5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 0,
+      allocatedEur: 1000,
+      feePct: 0.25,
+    });
+    expect(result.sellExecuted).toBe(0);
+    expect(result.sellIgnoredDisabled).toBe(1);
+    expect(result.sellIgnoredNoInventory).toBe(0);
+  });
+
   it("computes correct max net buys (signal-level)", () => {
     // Drops in a row — all trigger BUY signals, no SELLs
     const droppingPrices = [100, 90, 81, 73, 66, 59, 53, 48, 43, 39];
@@ -172,6 +241,21 @@ describe("runTriggerSimulation", () => {
     });
     expect(result.totalCandles).toBe(2);
     expect(result.rows).toHaveLength(2);
+  });
+});
+
+describe("sellBelowRawAcb", () => {
+  it("returns true when close is strictly below acbPrice", () => {
+    expect(sellBelowRawAcb(0.16115, 0.213731)).toBe(true);
+  });
+
+  it("returns false when close is at or above acbPrice", () => {
+    expect(sellBelowRawAcb(80.2, 80)).toBe(false);
+    expect(sellBelowRawAcb(80, 80)).toBe(false);
+  });
+
+  it("returns false when acbPrice is null", () => {
+    expect(sellBelowRawAcb(80, null)).toBe(false);
   });
 });
 
@@ -575,5 +659,261 @@ describe("benchmarks", () => {
     expect(lastWithFee.dcaValue).toBeLessThan(lastNoFee.dcaValue);
     // Hold with fees should be worth less
     expect(lastWithFee.holdValue).toBeLessThan(lastNoFee.holdValue);
+  });
+});
+
+describe("estimateUndersizedSides", () => {
+  it("flags the buy side when the EUR amount converts to fewer units than the minimum", () => {
+    // €10 at €100/unit = 0.1 units, below a 0.5-unit minimum
+    const result = estimateUndersizedSides(10, 100, 100, 0.5);
+    expect(result.buyUndersized).toBe(true);
+    expect(result.sellUndersized).toBe(false);
+  });
+
+  it("flags the sell side independently of the buy side", () => {
+    // buy €100 -> 1 unit (clears 0.5 min), sell €10 -> 0.1 unit (below 0.5 min)
+    const result = estimateUndersizedSides(100, 10, 100, 0.5);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(true);
+  });
+
+  it("flags neither side when both amounts clear the minimum", () => {
+    const result = estimateUndersizedSides(100, 100, 100, 0.5);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(false);
+  });
+
+  it("returns no warning when minOrderBaseUnits is null", () => {
+    const result = estimateUndersizedSides(1, 1, 100, null);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(false);
+  });
+
+  it("returns no warning when the reference price is zero or unavailable", () => {
+    const result = estimateUndersizedSides(100, 100, 0, 0.5);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(false);
+  });
+
+  it("never flags a disabled side (amount exactly 0) as undersized", () => {
+    // A zero amount is a documented valid one-sided strategy, not an
+    // accidentally-small one — without the >0 guard, 0/price is always
+    // < any positive minimum, so this would wrongly warn every time.
+    const result = estimateUndersizedSides(0, 0, 100, 0.5);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(false);
+  });
+
+  it("still flags a genuinely undersized side alongside a disabled one", () => {
+    // buy disabled (0), sell €10 at €100/unit = 0.1 units, below 0.5 min
+    const result = estimateUndersizedSides(0, 10, 100, 0.5);
+    expect(result.buyUndersized).toBe(false);
+    expect(result.sellUndersized).toBe(true);
+  });
+});
+
+describe("checkRsiConfig", () => {
+  it("flags a buy threshold above 100 as out of range", () => {
+    const result = checkRsiConfig(14, 120, 70);
+    expect(result.buyOutOfRange).toBe(true);
+    expect(result.sellOutOfRange).toBe(false);
+    expect(result.periodTooShort).toBe(false);
+  });
+
+  it("flags a sell threshold above 100 as out of range", () => {
+    const result = checkRsiConfig(14, 30, 150);
+    expect(result.sellOutOfRange).toBe(true);
+    expect(result.buyOutOfRange).toBe(false);
+  });
+
+  it("flags a negative threshold as out of range", () => {
+    const result = checkRsiConfig(14, -5, 70);
+    expect(result.buyOutOfRange).toBe(true);
+  });
+
+  it("flags a period below 2 as too short", () => {
+    const result = checkRsiConfig(1, 30, 70);
+    expect(result.periodTooShort).toBe(true);
+  });
+
+  it("flags nothing for a sane 14/30/70 config", () => {
+    const result = checkRsiConfig(14, 30, 70);
+    expect(result.periodTooShort).toBe(false);
+    expect(result.buyOutOfRange).toBe(false);
+    expect(result.sellOutOfRange).toBe(false);
+    expect(result.buyAboveNeutral).toBe(false);
+    expect(result.sellBelowNeutral).toBe(false);
+  });
+
+  it("flags nothing when RSI isn't configured (period 0)", () => {
+    const result = checkRsiConfig(0, 120, 150);
+    expect(result.periodTooShort).toBe(false);
+    expect(result.buyOutOfRange).toBe(false);
+    expect(result.sellOutOfRange).toBe(false);
+    expect(result.buyAboveNeutral).toBe(false);
+    expect(result.sellBelowNeutral).toBe(false);
+  });
+
+  it("flags an unparseable (NaN) threshold as out of range", () => {
+    const result = checkRsiConfig(14, NaN, 70);
+    expect(result.buyOutOfRange).toBe(true);
+  });
+
+  it("flags a valid-but-weak buy threshold above 50 as a soft heads-up", () => {
+    const result = checkRsiConfig(14, 90, 70);
+    expect(result.buyOutOfRange).toBe(false);
+    expect(result.buyAboveNeutral).toBe(true);
+  });
+
+  it("flags a valid-but-weak sell threshold below 50 as a soft heads-up", () => {
+    const result = checkRsiConfig(14, 30, 10);
+    expect(result.sellOutOfRange).toBe(false);
+    expect(result.sellBelowNeutral).toBe(true);
+  });
+
+  it("does not double-flag a hard out-of-range threshold as also a soft heads-up", () => {
+    const result = checkRsiConfig(14, 120, 150);
+    expect(result.buyOutOfRange).toBe(true);
+    expect(result.buyAboveNeutral).toBe(false);
+    expect(result.sellOutOfRange).toBe(true);
+    expect(result.sellBelowNeutral).toBe(false);
+  });
+
+  it("does not flag a buy threshold exactly at 50 (neutral itself is a valid, if extreme, choice)", () => {
+    const result = checkRsiConfig(14, 50, 50);
+    expect(result.buyAboveNeutral).toBe(false);
+    expect(result.sellBelowNeutral).toBe(false);
+  });
+});
+
+describe("RSI gate in runTriggerSimulation", () => {
+  // Same fixtures as tests/domain/unit/test_strategy_eval.py /
+  // test_strategy_eval_sell.py on the Python side — kept in sync manually
+  // (see cooldownOk() precedent above for why: no shared cross-language
+  // test runner, so parity is pinned via matching fixtures + comments).
+  function seriesFrom(start: number, changes: number[]): number[] {
+    const closes = [start];
+    for (const c of changes) closes.push(closes[closes.length - 1] + c);
+    return closes;
+  }
+
+  it("parity: RSI matches the same Wilder reference series as the Python port", () => {
+    // Same series as tests/domain/unit/test_rsi.py::test_rsi_matches_known_reference_values
+    const closes = [
+      44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42,
+      45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28,
+    ];
+    const values = rsi(closes, 14);
+    expect(values[14]).not.toBeNull();
+    expect(values[14]!).toBeCloseTo(70.46, 1);
+  });
+
+  it("blocks a buy when the price trigger fires but RSI is not oversold", () => {
+    // 13 gains of +5, then a final -16.5 drop (-10%) — RSI ~79.75.
+    const closes = seriesFrom(100, [...Array(13).fill(5), -16.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      rsiPeriod: 14,
+      rsiMaxForBuy: 30,
+    });
+    const lastRow = result.rows[result.rows.length - 1];
+    expect(lastRow.action).toBe("BUY_IGNORED_RSI");
+    expect(result.buyIgnoredRsi).toBe(1);
+    expect(result.buyExecuted).toBe(0);
+    // Row-level RSI — feeds the chart's RSI panel and tooltip.
+    expect(lastRow.rsi).not.toBeNull();
+    expect(lastRow.rsi!).toBeCloseTo(79.75, 1);
+  });
+
+  it("leaves rsi null on every row when rsiPeriod is not configured", () => {
+    const closes = seriesFrom(100, [...Array(13).fill(5), -16.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+    });
+    expect(result.rows.every((r) => r.rsi == null)).toBe(true);
+  });
+
+  it("allows a buy when the price trigger fires and RSI is oversold", () => {
+    // 13 losses of -5, then a final -13.5 drop (-10%) — RSI = 0.
+    const closes = seriesFrom(200, [...Array(13).fill(-5), -13.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      rsiPeriod: 14,
+      rsiMaxForBuy: 30,
+    });
+    const lastRow = result.rows[result.rows.length - 1];
+    expect(lastRow.action).toBe("BUY_EXECUTED");
+  });
+
+  it("blocks a sell when the price trigger fires but RSI is not overbought", () => {
+    // 13 losses of -5, then a final +13.5 rise (+10%) — RSI ~17.2.
+    const closes = seriesFrom(200, [...Array(13).fill(-5), 13.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      initialAssetUnits: 5,
+      initialAcbPrice: 50,
+      rsiPeriod: 14,
+      rsiMinForSell: 70,
+    });
+    const lastRow = result.rows[result.rows.length - 1];
+    expect(lastRow.action).toBe("SELL_IGNORED_RSI");
+    expect(result.sellIgnoredRsi).toBe(1);
+    expect(result.sellExecuted).toBe(0);
+  });
+
+  it("allows a sell when the price trigger fires and RSI is overbought", () => {
+    // 13 gains of +5, then a final +16.5 rise (+10%) — RSI = 100.
+    const closes = seriesFrom(100, [...Array(13).fill(5), 16.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+      initialAssetUnits: 5,
+      initialAcbPrice: 50,
+      rsiPeriod: 14,
+      rsiMinForSell: 70,
+    });
+    const lastRow = result.rows[result.rows.length - 1];
+    expect(lastRow.action).toBe("SELL_EXECUTED");
+  });
+
+  it("skips the RSI gate entirely when rsiPeriod is not set (backward compat)", () => {
+    // Same drop as the "blocks a buy" case, but no RSI params — must
+    // execute exactly as it did before this feature existed.
+    const closes = seriesFrom(100, [...Array(13).fill(5), -16.5]);
+    const result = runTriggerSimulation({
+      candles: makeCandles(closes),
+      buySigma: 0.5,
+      sellSigma: 0.5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 1000,
+    });
+    const lastRow = result.rows[result.rows.length - 1];
+    expect(lastRow.action).toBe("BUY_EXECUTED");
+    expect(result.buyIgnoredRsi).toBe(0);
   });
 });

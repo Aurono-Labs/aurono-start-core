@@ -1,5 +1,6 @@
 from .types import *
 from .math import pct_change
+from .indicators import rsi
 from . import reasons
 from datetime import timedelta
 
@@ -87,6 +88,35 @@ def evaluate_strategy(
     # BUY LOGIC (INTENT ONLY — NO SIZING)
     # =============================
     if change_pct <= -spec.buy_drop_pct:
+        # Side-disabled check — checked before everything else, including
+        # RSI: a zero buy_eur means this side can never trade regardless of
+        # what else is true, so there's no point evaluating any other
+        # condition first. A documented valid config (one-sided strategy),
+        # not an error — must resolve to a clean HOLD, never reach sizing.
+        if spec.buy_eur <= 0:
+            return Decision(
+                action="HOLD",
+                reason_code=reasons.BUY_DISABLED,
+                metrics=metrics,
+            )
+
+        # RSI condition — checked first: it gates whether this is a valid
+        # trade candidate at all, not a resource/timing constraint like the
+        # checks below it. Skipped entirely when rsi_period is None.
+        if spec.rsi_period is not None:
+            rsi_values = rsi(market.closes or [], spec.rsi_period)
+            current_rsi = rsi_values[-1] if rsi_values else None
+            if current_rsi is None or current_rsi > spec.rsi_max_for_buy:
+                return Decision(
+                    action="HOLD",
+                    reason_code=reasons.RSI_NOT_OVERSOLD,
+                    metrics={**metrics, "rsi": current_rsi},
+                )
+            # RSI passed the gate — carry the value forward so it's still
+            # visible in metrics on BUY_TRIGGERED (and any HOLD below this
+            # point), not just on the RSI_NOT_OVERSOLD rejection above.
+            metrics = {**metrics, "rsi": current_rsi}
+
         # Cooldown constraint
         if not _cooldown_elapsed("buy", spec, constraint, ctx.asof):
             return Decision(
@@ -117,6 +147,28 @@ def evaluate_strategy(
     # SELL LOGIC (INTENT ONLY)
     # =============================
     if change_pct >= spec.sell_rise_pct:
+        # Side-disabled check — mirrors the buy side above.
+        if spec.sell_eur <= 0:
+            return Decision(
+                action="HOLD",
+                reason_code=reasons.SELL_DISABLED,
+                metrics=metrics,
+            )
+
+        # RSI condition — checked first, mirrors the buy side above.
+        if spec.rsi_period is not None:
+            rsi_values = rsi(market.closes or [], spec.rsi_period)
+            current_rsi = rsi_values[-1] if rsi_values else None
+            if current_rsi is None or current_rsi < spec.rsi_min_for_sell:
+                return Decision(
+                    action="HOLD",
+                    reason_code=reasons.RSI_NOT_OVERBOUGHT,
+                    metrics={**metrics, "rsi": current_rsi},
+                )
+            # RSI passed the gate — carry the value forward, mirrors the
+            # buy side above.
+            metrics = {**metrics, "rsi": current_rsi}
+
         # Cooldown constraint
         if not _cooldown_elapsed("sell", spec, constraint, ctx.asof):
             return Decision(
@@ -139,7 +191,12 @@ def evaluate_strategy(
                 metrics=metrics,
             )
 
-        if close_price < portfolio.acb_price:
+        # Fee-aware floor: a sell exactly at cost still loses the round-trip
+        # fee, so the floor is cost plus a margin, not raw cost. margin=0
+        # reproduces the exact old raw-ACB comparison — this is a strict
+        # superset of that check, not a separate condition.
+        sell_floor = portfolio.acb_price * (Decimal("1") + spec.min_sell_margin_pct / Decimal("100"))
+        if close_price < sell_floor:
             return Decision(
                 action="HOLD",
                 reason_code=reasons.BELOW_ACB,
@@ -148,7 +205,11 @@ def evaluate_strategy(
 
         # Minimum position constraint
         if spec.min_position_units and spec.min_position_units > 0:
-            sell_units = spec.sell_eur / close_price
+            # Clamped to the actual position — mirrors triggerAnalysis.ts's
+            # Math.min(sellEur/close, assetUnits). A sell_eur sized above the
+            # position can never realize more units than are held, so
+            # `remaining` must not go negative.
+            sell_units = min(spec.sell_eur / close_price, portfolio.asset_units)
             remaining = portfolio.asset_units - sell_units
             if remaining < spec.min_position_units:
                 return Decision(

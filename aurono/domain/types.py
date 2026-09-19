@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional, Literal
+from typing import List, Optional, Literal
 from datetime import datetime
 
 @dataclass(frozen=True)
@@ -16,6 +16,10 @@ class StrategySpec:
     min_position_units: Optional[Decimal] = None  # reject sell if remaining < this
     cooldown_periods: Optional[int] = None         # skip N timeframe periods between same-side trades
     cooldown_reset_on_opposite: bool = True         # opposite-side trade resets cooldown timer
+    rsi_period: Optional[int] = None               # e.g. 14 — None disables the RSI gate entirely
+    rsi_max_for_buy: Optional[Decimal] = None       # buy also requires rsi <= this
+    rsi_min_for_sell: Optional[Decimal] = None      # sell also requires rsi >= this
+    min_sell_margin_pct: Decimal = Decimal("0.5")   # sell floor = acb_price * (1 + this/100), covers round-trip fee
 
 @dataclass(frozen=True)
 class ConstraintState:
@@ -26,6 +30,7 @@ class ConstraintState:
 class MarketWindow:
     prev_close: Decimal        # previous closed candle
     last_close: Decimal        # most recent closed candle
+    closes: Optional[List[Decimal]] = None  # oldest→newest; only populated when a spec needs more than 2 (e.g. RSI)
 
 
 @dataclass(frozen=True)
