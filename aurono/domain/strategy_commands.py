@@ -137,13 +137,27 @@ def create_strategy(
     parameters: Dict[str, Any],
     initial_capital_eur: Decimal,
     initial_inventory: Optional[Dict[str, Any]] = None,
+    bootstrap_mark: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """
     Create a new strategy with its first version and initial capital/inventory.
 
     Emits: StrategyCreated, StrategyVersionCreated, StrategyActivated,
-           and optionally CapitalCredited and/or InventoryBootstrapped.
+           and optionally CapitalCredited, InventoryBootstrapped and
+           InventoryBootstrapMarked.
     Returns: {strategy_id, strategy_version_id}
+
+    `bootstrap_mark` carries the market price of the starting position,
+    resolved by the caller from its own candle store: this module has no
+    market-data dependency by design, so pricing is the caller's job. Shape
+    is `{price: Decimal, source_timeframe: str, source_timestamp_ms: int,
+    source_lag_seconds: int}`, where the source fields record which candle
+    the price came from so the derivation stays auditable.
+
+    When it is None, no InventoryBootstrapMarked is emitted and the
+    benchmark base falls back to cost basis for this strategy. That is the
+    honest outcome when no candle sits close enough to the bootstrap to
+    price it.
     """
     if not name or not name.strip():
         raise CommandError("Strategy name is required")
@@ -198,7 +212,7 @@ def create_strategy(
 
         # InventoryBootstrapped requires actor_type='system'
         from aurono.events.runtime import emit_event_runtime
-        emit_event_runtime(
+        bootstrap_event_id = emit_event_runtime(
             event_db_path=db_path,
             ledger_db_path=db_path,
             event_type="InventoryBootstrapped",
@@ -208,6 +222,31 @@ def create_strategy(
             payload={"initial_units": units, "acb_price": acb_price},
             envelope={"strategy_id": strategy_id, "symbol": inv_symbol},
         )
+
+        # 6. InventoryBootstrapMarked: what the position was actually worth.
+        # acb_price is the sell floor the strategy trades against; it is not
+        # the money that came in, and the two diverge badly (41% on production
+        # data). Return figures need this one, ACB needs the other.
+        if bootstrap_mark is not None:
+            mark_price = Decimal(str(bootstrap_mark["price"]))
+            emit_event_runtime(
+                event_db_path=db_path,
+                ledger_db_path=db_path,
+                event_type="InventoryBootstrapMarked",
+                actor_type="system",
+                actor_id="strategy_create",
+                aurono_device_id="api",
+                payload={
+                    "bootstrap_event_id": bootstrap_event_id,
+                    "units": units,
+                    "mark_price": mark_price,
+                    "mark_value_eur": units * mark_price,
+                    "source_timeframe": bootstrap_mark["source_timeframe"],
+                    "source_timestamp_ms": bootstrap_mark["source_timestamp_ms"],
+                    "source_lag_seconds": bootstrap_mark["source_lag_seconds"],
+                },
+                envelope={"strategy_id": strategy_id, "symbol": inv_symbol},
+            )
 
     # Update projections
     from datetime import datetime, timezone

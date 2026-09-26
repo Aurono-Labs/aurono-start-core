@@ -46,3 +46,38 @@ InventoryBootstrapped = EventSchema(
     },
     payload_optional={},
 )
+
+# The market value of a bootstrapped position at the moment it was bootstrapped.
+#
+# Emitted alongside InventoryBootstrapped, never instead of it. The two numbers
+# answer different questions and both are needed: acb_price is the behavioural
+# sell floor the strategy trades against, while mark_price is the fiat that
+# actually flowed in, which is what any return or benchmark figure has to use.
+#
+# A separate event rather than a field on InventoryBootstrapped because events
+# are immutable: the 43 historical bootstraps cannot grow a field, but they can
+# be followed by a derived record.
+#
+# source_* fields record which candle the price came from, so the derivation is
+# auditable rather than implied. source_lag_seconds is the gap between the
+# bootstrap and the candle that priced it.
+InventoryBootstrapMarked = EventSchema(
+    event_type="InventoryBootstrapMarked",
+    domain="system",
+    actor_types={"system"},
+    envelope=EnvelopeRule(
+        required={"strategy_id", "symbol"},
+        optional=set(),
+        forbidden={"trade_id"},
+    ),
+    payload={
+        "bootstrap_event_id": str,
+        "units": Decimal,
+        "mark_price": Decimal,
+        "mark_value_eur": Decimal,
+        "source_timeframe": str,
+        "source_timestamp_ms": int,
+        "source_lag_seconds": int,
+    },
+    payload_optional={},
+)

@@ -93,5 +93,6 @@ ALL_EVENT_SCHEMAS = {
         SystemStartup,
         KillSwitchActivated,
         InventoryBootstrapped,
+        InventoryBootstrapMarked,
     ]
 }

@@ -28,7 +28,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 
 Interval = Literal["monthly", "weekly"]
@@ -67,10 +67,24 @@ def net_injected_capital(conn: sqlite3.Connection, strategy_id: str) -> Decimal:
     Includes:
       - `credit` entries (deposits)
       - `withdraw` entries (withdrawals — these rows are already negative)
-      - `cost_basis` entries (EUR value of a bootstrapped initial position,
-        written by InventoryBootstrapped as `initial_units * acb_price`)
+      - the market value of a bootstrapped initial position, from the
+        `InventoryBootstrapMarked` event (see below)
 
     Excludes fill-related entries (those carry a trade_id).
+
+    Bootstrapped positions are valued at the market price on the day they were
+    bootstrapped, never at `initial_units * acb_price`. The `cost_basis` ledger
+    row holds the latter, and it is the right number for ACB and realized P&L,
+    but it is a behavioural sell floor rather than money that came in. On
+    production data the two diverge by 41% (€4,485 acb against €2,642 market),
+    which inflated every benchmark base that included it by 33.7% aggregate and
+    made strategies look systematically worse than they were.
+
+    Falls back to the `cost_basis` row for any bootstrap with no mark event.
+    That covers strategies created before this shipped and not yet backfilled,
+    and the ones whose bootstrap date has no candle close enough to price it
+    honestly. Today's number is wrong for those, but it is the number they
+    already had; silently dropping to cash-only would be a bigger error.
 
     Note: `'debit'` is retained in the IN-list as a safety net for any
     legacy rows not yet rebuilt under the new kind taxonomy. Once rebuild
@@ -84,8 +98,8 @@ def net_injected_capital(conn: sqlite3.Connection, strategy_id: str) -> Decimal:
     Buy & Hold and DCA lines because it also includes the bootstrapped
     position. Including it gives all three series a fair starting point.
 
-    Amounts in the ledger are signed: credits/cost_basis are positive,
-    withdrawals/debits are negative, so a simple SUM yields the net.
+    Amounts in the ledger are signed: credits are positive, withdrawals/debits
+    are negative, so a simple SUM yields the net.
     """
     row = conn.execute(
         """
@@ -93,13 +107,73 @@ def net_injected_capital(conn: sqlite3.Connection, strategy_id: str) -> Decimal:
         FROM capital_ledger
         WHERE strategy_id = ?
           AND currency = 'EUR'
-          AND kind IN ('credit', 'debit', 'withdraw', 'cost_basis')
+          AND kind IN ('credit', 'debit', 'withdraw')
           AND trade_id IS NULL
         """,
         (strategy_id,),
     ).fetchone()
     value = row["net"] if isinstance(row, sqlite3.Row) else row[0]
-    return Decimal(str(value or 0))
+    cash = Decimal(str(value or 0))
+
+    return cash + _bootstrap_base(conn, strategy_id)
+
+
+def _bootstrap_base(conn: sqlite3.Connection, strategy_id: str) -> Decimal:
+    """
+    EUR the bootstrapped starting position was worth when it was bootstrapped.
+
+    Prefers the `InventoryBootstrapMarked` mark. Per bootstrap event, so a
+    strategy with several bootstraps takes the mark for the ones that have it
+    and the cost_basis row for the ones that do not.
+    """
+    marked: Dict[str, Decimal] = {}
+    for event_id, payload_json in conn.execute(
+        """
+        SELECT event_id, payload_json
+        FROM events
+        WHERE strategy_id = ?
+          AND event_type = 'InventoryBootstrapMarked'
+        """,
+        (strategy_id,),
+    ).fetchall():
+        try:
+            payload = json.loads(payload_json)
+            bootstrap_id = payload["bootstrap_event_id"]
+            marked[bootstrap_id] = Decimal(str(payload["mark_value_eur"]))
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            # A malformed mark must not take the whole benchmark down with it;
+            # the cost_basis fallback below still covers that bootstrap.
+            continue
+
+    # capital_ledger.event_id on a cost_basis row is the InventoryBootstrapped
+    # event's id, which is what the mark points back at.
+    cost_basis_rows = conn.execute(
+        """
+        SELECT event_id, amount
+        FROM capital_ledger
+        WHERE strategy_id = ?
+          AND currency = 'EUR'
+          AND kind = 'cost_basis'
+          AND trade_id IS NULL
+        """,
+        (strategy_id,),
+    ).fetchall()
+
+    total = Decimal("0")
+    seen = set()
+    for event_id, amount in cost_basis_rows:
+        seen.add(event_id)
+        total += marked.get(event_id, Decimal(str(amount or 0)))
+
+    # A bootstrap with acb_price = 0 writes no cost_basis row at all
+    # (write_from_event.py gates on acb_price > 0), so a mark for one would be
+    # missed by the loop above. Those are the strategies the old base counted
+    # as nothing, and the mark is the first real number they get.
+    for bootstrap_id, value in marked.items():
+        if bootstrap_id not in seen:
+            total += value
+
+    return total
 
 
 # ============================================================
