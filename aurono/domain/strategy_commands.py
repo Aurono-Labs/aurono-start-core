@@ -130,28 +130,6 @@ def _upsert_capital_projection(db_path: Path, strategy_id: str, amount: Decimal)
 # Commands
 # ============================================================
 
-def _upsert_inventory_projection(db_path: Path, strategy_id: str, asset: str, units: Decimal):
-    """Update inventory_balance_projection after InventoryBootstrapped."""
-    from aurono.projections.store_sqlite import load_inventory_balance, upsert_inventory_balance
-    from datetime import datetime, timezone
-
-    existing = load_inventory_balance(db_path, strategy_id, asset)
-    now = datetime.now(timezone.utc).isoformat()
-
-    if existing:
-        existing["quantity"] = float(Decimal(str(existing["quantity"])) + units)
-        existing["updated_at"] = now
-        upsert_inventory_balance(db_path, existing)
-    else:
-        upsert_inventory_balance(db_path, {
-            "strategy_id": strategy_id,
-            "asset": asset,
-            "quantity": float(units),
-            "reserved": 0.0,
-            "updated_at": now,
-        })
-
-
 def create_strategy(
     db_path: Path,
     *,
@@ -239,11 +217,6 @@ def create_strategy(
     _insert_version_identity(db_path, version_id=version_id, strategy_id=strategy_id,
                               parameters=parameters, timestamp=now)
     # Projections are updated inline by emit_event_runtime — no manual upsert needed
-
-    if has_inventory:
-        inv_sym = initial_inventory["symbol"]
-        asset = inv_sym.split("-")[0] if "-" in inv_sym else inv_sym
-        # Projections updated inline by emit_event_runtime
 
     return {"strategy_id": strategy_id, "strategy_version_id": version_id}
 
