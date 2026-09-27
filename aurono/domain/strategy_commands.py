@@ -225,8 +225,8 @@ def create_strategy(
 
         # 6. InventoryBootstrapMarked: what the position was actually worth.
         # acb_price is the sell floor the strategy trades against; it is not
-        # the money that came in, and the two diverge badly (41% on production
-        # data). Return figures need this one, ACB needs the other.
+        # the money that came in, and the two can diverge badly. Return
+        # figures need this one, ACB needs the other.
         if bootstrap_mark is not None:
             mark_price = Decimal(str(bootstrap_mark["price"]))
             emit_event_runtime(
@@ -361,18 +361,78 @@ def activate_strategy(
     # Projections updated inline by emit_event_runtime
 
 
+def _open_order_refusal(open_trades, status: str) -> str:
+    """
+    Why archiving was refused, and what the user can do about it.
+
+    Actionable rather than merely correct: there is no cancel endpoint, so
+    "cancel it yourself" would be a dead end. An active strategy's open orders
+    are force-cancelled by the scheduler once they age out, so waiting works.
+    A paused one is out of `get_active_strategies()`, so nothing will settle
+    the order until it is resumed - which is the same orphaning this guard
+    exists to prevent, reached by a different door.
+
+    The timeout is deliberately not quoted here. `ORDER_TIMEOUT_HOURS` lives in
+    `aurono/runtime/evaluator.py`, and importing it would pull the exchange
+    clients into this open-designated module's transitive closure and trip
+    tests/domain/test_import_boundaries.py. A duplicated literal would drift,
+    so the copy stays qualitative.
+    """
+    detail = ", ".join(
+        f"{str(t['side']).lower()} on {t['symbol']}" for t in open_trades
+    )
+    plural = "an order is" if len(open_trades) == 1 else f"{len(open_trades)} orders are"
+    if status == "paused":
+        remedy = (
+            "Resume the strategy so the order can settle, then archive it."
+        )
+    else:
+        remedy = (
+            "Wait for it to fill, or for Aurono to cancel it automatically, "
+            "then archive."
+        )
+    return f"Cannot archive while {plural} open ({detail}). {remedy}"
+
+
 def archive_strategy(
     db_path: Path,
     *,
     strategy_id: str,
+    exit_mark: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Archive a strategy.
 
-    Auto-withdraws remaining EUR capital (free + reserved) before archiving.
-    Asset holdings stay on the exchange but are no longer tracked.
+    Auto-withdraws idle EUR capital before archiving. Asset holdings stay on
+    the exchange but are no longer tracked.
 
-    Emits: CapitalDebited (if capital > 0), then StrategyArchived.
+    `exit_mark` carries the market price of whatever the strategy still holds,
+    resolved by the caller from its own candle store: this module has no
+    market-data dependency by design, so pricing is the caller's job. Shape is
+    `{symbol: str, price: Decimal, source_timeframe: str,
+    source_timestamp_ms: int, source_lag_seconds: int}` - the bootstrap mark's
+    shape plus `symbol`, because `create_strategy` is told which asset it is
+    bootstrapping while this command has to look up what is held and therefore
+    needs to know which asset the price belongs to. The source fields record
+    which candle priced it so the derivation stays auditable.
+
+    When it is None, or the strategy holds nothing, no InventoryExitMarked is
+    emitted. That is the honest outcome when no candle sits close enough to
+    price the exit, and it leaves the strategy reading exactly as it does
+    today rather than inventing a number.
+
+    Refuses while an order is open. Archiving used to withdraw
+    `available + reserved` with no such check, and that had two consequences.
+    `reduce_capital_balance()` subtracts a CapitalDebited from `available`
+    alone, so the committed half came back as a negative balance. And nothing
+    settled the order afterwards: `resolve_open_orders()` is reached only
+    through `get_active_strategies()`, which filters `status = 'active'`, so
+    the reservation stayed open forever and the limit order stayed live on the
+    exchange, unattended, while the capital overview reported that money as
+    free to reallocate.
+
+    Emits: CapitalDebited (if idle capital > 0), then InventoryExitMarked (if
+    coins are still held and a price resolved), then StrategyArchived.
     """
     state = _get_strategy_state(db_path, strategy_id)
     if state is None:
@@ -380,26 +440,101 @@ def archive_strategy(
     if state["status"] == "archived":
         raise CommandError("Strategy is already archived")
 
-    # Auto-withdraw remaining EUR capital
     conn = db_connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        # Broader than resolve_open_orders()'s predicate in two ways, both
+        # deliberate. That one also requires external_order_id IS NOT NULL
+        # because it needs the id to poll, but a submitted trade with no id yet
+        # may still have reached the exchange. And it omits 'partial', which is
+        # an order with an unfilled remainder still live on the exchange.
+        #
+        # 'intent' is deliberately NOT blocking. Nothing is on the exchange at
+        # that point, and ExecutionAborted is excluded from
+        # TRADE_LIFECYCLE_EVENTS by design, so an aborted flow can leave a
+        # trade at 'intent' permanently. Blocking on it would make such a
+        # strategy unarchivable forever, and there is no cancel endpoint to
+        # escape through - a worse failure than the one this guard prevents.
+        open_trades = conn.execute(
+            """
+            SELECT side, symbol FROM trade_state_projection
+            WHERE strategy_id = ? AND state IN ('submitted', 'accepted', 'partial')
+            """,
+            (strategy_id,),
+        ).fetchall()
         row = conn.execute(
             "SELECT available, reserved FROM capital_balance_projection WHERE strategy_id = ? AND currency = 'EUR'",
             (strategy_id,),
         ).fetchone()
+        # `quantity` is the free half and `reserved` the locked half, mirroring
+        # capital's available/reserved, so what the strategy actually holds is
+        # the sum. The guard above means `reserved` is zero on any path that
+        # gets as far as archiving, but summing keeps this correct on its own
+        # terms rather than depending on that.
+        held_rows = conn.execute(
+            """
+            SELECT asset, quantity + reserved AS units
+            FROM inventory_balance_projection
+            WHERE strategy_id = ? AND quantity + reserved > 0
+            """,
+            (strategy_id,),
+        ).fetchall()
     finally:
         conn.close()
 
+    if open_trades:
+        raise CommandError(_open_order_refusal(open_trades, state["status"]))
+
     if row:
-        available = Decimal(str(row["available"]))
-        reserved = Decimal(str(row["reserved"]))
-        total_eur = available + reserved
+        # Only idle capital. The guard above means `reserved` is zero here, so
+        # this is the same number the old `available + reserved` produced on
+        # every path that is still allowed. Withdrawing `available` alone
+        # rather than the sum keeps that an invariant of the code instead of a
+        # property of the caller, and stops float dust in `reserved` (real
+        # rows carry values like 1.15e-14) from pushing `available` negative.
+        total_eur = Decimal(str(row["available"]))
         if total_eur > 0:
             _emit(db_path, event_type="CapitalDebited",
                   payload={"amount": total_eur, "currency": "EUR"},
                   envelope={"strategy_id": strategy_id})
             # Projections updated inline by emit_event_runtime
+
+    # What the coins were worth as they left. Emitted before StrategyArchived so
+    # that event stays the last word in the strategy's history, and so the
+    # Timeline reads in the order things happened: cash withdrawn, position
+    # valued, strategy archived.
+    #
+    # The caller resolves one price, for the strategy's own symbol, so only the
+    # matching asset can be marked. A strategy can be bootstrapped with an asset
+    # other than the one it trades, and pricing FET units off a BTC-EUR candle
+    # would be worse than recording nothing - the same guard create_strategy
+    # applies to the bootstrap mark.
+    if exit_mark is not None and held_rows:
+        mark_symbol = str(exit_mark["symbol"])
+        mark_asset = mark_symbol.split("-", 1)[0].upper()
+        mark_price = Decimal(str(exit_mark["price"]))
+        for held in held_rows:
+            if str(held["asset"]).upper() != mark_asset:
+                continue
+            units = Decimal(str(held["units"]))
+            from aurono.events.runtime import emit_event_runtime
+            emit_event_runtime(
+                event_db_path=db_path,
+                ledger_db_path=db_path,
+                event_type="InventoryExitMarked",
+                actor_type="system",
+                actor_id="strategy_archive",
+                aurono_device_id="api",
+                payload={
+                    "units": units,
+                    "mark_price": mark_price,
+                    "mark_value_eur": units * mark_price,
+                    "source_timeframe": exit_mark["source_timeframe"],
+                    "source_timestamp_ms": exit_mark["source_timestamp_ms"],
+                    "source_lag_seconds": exit_mark["source_lag_seconds"],
+                },
+                envelope={"strategy_id": strategy_id, "symbol": mark_symbol},
+            )
 
     _emit(db_path, event_type="StrategyArchived",
           payload={},

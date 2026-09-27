@@ -81,3 +81,43 @@ InventoryBootstrapMarked = EventSchema(
     },
     payload_optional={},
 )
+
+# The market value of a position still held when its strategy was archived: the
+# other end of the boundary InventoryBootstrapMarked opens.
+#
+# Archiving withdraws the strategy's EUR but emits no inventory event, so the
+# coins stay in inventory_balance_projection while the strategy drops out of
+# every aggregate query. Without this record the value leaving Aurono's
+# measurement boundary is never stated, and what the read path reports depends
+# on luck: frozen at the archive-date snapshot when one exists, drifting on a
+# live ticker when it does not, and zero when neither resolves. That last case
+# is not marginal - a strategy whose fallback resolves to nothing reports
+# losing its entire invested base while it is still holding the coins.
+#
+# Same payload field names as InventoryBootstrapMarked on purpose - the Activity
+# detail renderer and its EUR/price formatting keys are shared, and the two
+# events are the same kind of fact about opposite ends of a strategy's life.
+#
+# No back-pointer, unlike the bootstrap mark's bootstrap_event_id. A strategy
+# can have several bootstraps, so that mark has to say which one it prices; a
+# strategy is archived exactly once, so strategy_id plus event type is already
+# unambiguous and an archived_event_id would only be a field to keep correct.
+InventoryExitMarked = EventSchema(
+    event_type="InventoryExitMarked",
+    domain="system",
+    actor_types={"system"},
+    envelope=EnvelopeRule(
+        required={"strategy_id", "symbol"},
+        optional=set(),
+        forbidden={"trade_id"},
+    ),
+    payload={
+        "units": Decimal,
+        "mark_price": Decimal,
+        "mark_value_eur": Decimal,
+        "source_timeframe": str,
+        "source_timestamp_ms": int,
+        "source_lag_seconds": int,
+    },
+    payload_optional={},
+)

@@ -94,5 +94,6 @@ ALL_EVENT_SCHEMAS = {
         KillSwitchActivated,
         InventoryBootstrapped,
         InventoryBootstrapMarked,
+        InventoryExitMarked,
     ]
 }

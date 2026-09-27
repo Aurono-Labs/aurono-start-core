@@ -163,10 +163,10 @@ def strategy_summary(
     `position_cost_eur` holds `initial_units * acb_price`, a price the user
     paid before Aurono existed, while `net_invested_eur` holds the market value
     at bootstrap - the fiat that actually came in. Measuring performance
-    against the former charges the strategy for a gap it did not create. On
-    the dev instance that inverted the verdict on the largest position: a BTC
-    strategy 179 days old with zero trades read -68.32 against cost basis and
-    +73.42 against what came in.
+    against the former charges the strategy for a gap it did not create. The
+    gap can be wide enough to invert the verdict: a long-held position that was
+    bought well above its price at bootstrap reads as a loss against cost basis
+    while being a gain against what actually came in, after zero trades.
     """
     from aurono.analytics.benchmarks import net_injected_capital
     from aurono.analytics.pnl import (

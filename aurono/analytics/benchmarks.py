@@ -75,10 +75,11 @@ def net_injected_capital(conn: sqlite3.Connection, strategy_id: str) -> Decimal:
     Bootstrapped positions are valued at the market price on the day they were
     bootstrapped, never at `initial_units * acb_price`. The `cost_basis` ledger
     row holds the latter, and it is the right number for ACB and realized P&L,
-    but it is a behavioural sell floor rather than money that came in. On
-    production data the two diverge by 41% (€4,485 acb against €2,642 market),
-    which inflated every benchmark base that included it by 33.7% aggregate and
-    made strategies look systematically worse than they were.
+    but it is a behavioural sell floor rather than money that came in. The two
+    can diverge by a wide margin, since `acb_price` is whatever was paid long
+    before the strategy existed. Wherever they do, every benchmark base that
+    included it is inflated and the strategy looks systematically worse than it
+    was.
 
     Falls back to the `cost_basis` row for any bootstrap with no mark event.
     That covers strategies created before this shipped and not yet backfilled,
