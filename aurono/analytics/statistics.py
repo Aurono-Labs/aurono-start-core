@@ -145,7 +145,30 @@ def strategy_summary(
 ) -> Dict[str, object]:
     """
     Full strategy analytics: realized P&L + unrealized + drawdown + trade stats.
+
+    Two different P&L numbers come out of here and they answer different
+    questions. Both are correct; using one where the other belongs is the
+    defect this docstring exists to prevent.
+
+    `unrealized_pnl` is `mark_value - position_cost_eur`: how far the position
+    sits from its average cost basis. That is the sell floor the ACB-protection
+    rule acts on, so it is the right number wherever the label says
+    "unrealized".
+
+    `total_pnl_eur` is `portfolio_value - net_invested_eur`: what the strategy
+    has actually made since it started. It is the right number wherever the
+    label says "overall", "total" or "performance".
+
+    They diverge on a strategy that started with a position already in hand.
+    `position_cost_eur` holds `initial_units * acb_price`, a price the user
+    paid before Aurono existed, while `net_invested_eur` holds the market value
+    at bootstrap - the fiat that actually came in. Measuring performance
+    against the former charges the strategy for a gap it did not create. On
+    the dev instance that inverted the verdict on the largest position: a BTC
+    strategy 179 days old with zero trades read -68.32 against cost basis and
+    +73.42 against what came in.
     """
+    from aurono.analytics.benchmarks import net_injected_capital
     from aurono.analytics.pnl import (
         compute_realized_pnl,
         unrealized_pnl as compute_unrealized,
@@ -177,12 +200,20 @@ def strategy_summary(
 
     dd = max_drawdown(snapshots)
 
+    # What the user actually put in: cash credits net of withdrawals, plus the
+    # market value of any bootstrapped starting position. Falls back to the
+    # cost_basis row per bootstrap when no mark exists, so an unbackfilled
+    # strategy reads exactly as it did before this shipped.
+    net_invested = net_injected_capital(conn, str(strategy_id))
+
     return {
         "strategy_id": strategy_id,
         "symbol": symbol,
         "mark_price": mark_price,
         "portfolio_value": p_value,
         "unrealized_pnl": u_pnl,
+        "net_invested_eur": net_invested,
+        "total_pnl_eur": p_value - net_invested,
         "position_units": state.position_units,
         "acb_price": state.acb_price,
         "free_eur": state.free_eur,
