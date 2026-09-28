@@ -289,6 +289,86 @@ def _strategy_value_series(
     ]
 
 
+def _extend_strategy_series_to_last_candle(
+    conn: sqlite3.Connection,
+    strategy_id: str,
+    series: List[BenchmarkPoint],
+    candles: List[list],
+) -> List[BenchmarkPoint]:
+    """
+    Append one point repricing the strategy's last known position at the final
+    candle, so the strategy line and the benchmark lines end at the same instant
+    (Phase 19.3).
+
+    Without this the comparison differences two values taken days apart. The
+    strategy line comes from `portfolio_snapshot_projection`, which is written
+    from `DecisionObserved` and therefore stops when a strategy stops being
+    evaluated; the benchmark lines are computed from candles and run to today.
+    A paused strategy that had never traded, and so held exactly the position
+    buy-and-hold holds, therefore reported a loss against it where the honest
+    answer is "level": its value at the pause, against buy-and-hold's value
+    today. The gap grows with however long the strategy has been idle.
+
+    **Priced from the last candle, deliberately, and not from the freshest price
+    available.** `_current_mark_price` in the API layer searches every timeframe
+    and would often return a newer price than `candles` holds, since `candles`
+    is the strategy's own timeframe. Using it here would make the strategy line
+    end on a different price from the benchmark lines and hand the strategy a
+    free gain or loss purely from which candle each side happened to read. Both
+    sides ending on one candle is the property that matters; being a few minutes
+    behind the newest tick is not.
+
+    **Archived strategies are excluded.** Their coins left the measurement
+    boundary on the archive date, so their value correctly stops there - the
+    same rule `_exit_mark_price` and `_current_mark_price` already follow.
+    Aligning *their* two series means truncating the benchmark lines instead,
+    which is a different operation on shipped 19.2 behaviour; see the note in
+    project_plan.md 19.3.
+    """
+    if not series or not candles:
+        return series
+
+    status_row = conn.execute(
+        "SELECT status FROM strategy_state_projection WHERE strategy_id = ?",
+        (strategy_id,),
+    ).fetchone()
+    if status_row is not None and status_row["status"] == "archived":
+        return series
+
+    last_candle_ms = int(candles[-1][0])
+    close = candles[-1][4]
+    if close is None or float(close) <= 0:
+        return series
+
+    # Nothing to add when the strategy's own history already reaches the final
+    # candle, which is the normal case for an actively evaluated strategy.
+    if _iso_to_ms(series[-1].timestamp_utc) >= last_candle_ms:
+        return series
+
+    snapshot = conn.execute(
+        """
+        SELECT free_eur, reserved_eur, asset_units, reserved_units
+        FROM portfolio_snapshot_projection
+        WHERE strategy_id = ? AND portfolio_value_eur IS NOT NULL
+        ORDER BY timestamp_utc DESC LIMIT 1
+        """,
+        (strategy_id,),
+    ).fetchone()
+    if snapshot is None:
+        return series
+
+    def _num(value) -> float:
+        return float(value) if value is not None else 0.0
+
+    units = _num(snapshot["asset_units"]) + _num(snapshot["reserved_units"])
+    value = _num(snapshot["free_eur"]) + _num(snapshot["reserved_eur"]) + units * float(close)
+
+    return [
+        *series,
+        BenchmarkPoint(timestamp_utc=_ms_to_iso(last_candle_ms), value_eur=value),
+    ]
+
+
 # ============================================================
 # Strategy lifetime window + parameters
 # ============================================================
@@ -416,6 +496,12 @@ def compute_benchmark_comparison(
             dca=[],
             buy_and_hold=[],
         )
+
+    # Both sides must end on the same candle, or the card differences two
+    # values taken days apart. See the helper for the measured case.
+    strategy_series = _extend_strategy_series_to_last_candle(
+        conn, strategy_id, strategy_series, candles
+    )
 
     hold_series = compute_buy_and_hold_series(candles, base)
     dca_series = compute_dca_series(candles, base, interval)
