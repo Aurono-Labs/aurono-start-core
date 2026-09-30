@@ -15,14 +15,22 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from aurono.db.connect import connect as db_connect
-
-
-REQUIRED_PARAMETERS = {"symbol", "exchange", "timeframe", "buy_drop_pct", "sell_rise_pct", "buy_eur"}
+from aurono.domain.strategy_params import REQUIRED_PARAMETERS, validate_parameters
 
 
 class CommandError(Exception):
     """Raised when a command fails validation."""
     pass
+
+
+def check_parameters(parameters: Dict[str, Any]) -> None:
+    """Raise CommandError naming every missing or invalid parameter."""
+    missing = REQUIRED_PARAMETERS - parameters.keys()
+    if missing:
+        raise CommandError(f"Missing required parameters: {', '.join(sorted(missing))}")
+    errs = validate_parameters(parameters)
+    if errs:
+        raise CommandError("Invalid parameters: " + " ".join(errs[k] for k in sorted(errs)))
 
 
 def _emit(db_path: Path, *, event_type: str, payload: Dict[str, Any], envelope: Dict[str, Any]) -> str:
@@ -138,13 +146,15 @@ def create_strategy(
     initial_capital_eur: Decimal,
     initial_inventory: Optional[Dict[str, Any]] = None,
     bootstrap_mark: Optional[Dict[str, Any]] = None,
+    start_paused: bool = False,
 ) -> Dict[str, str]:
     """
     Create a new strategy with its first version and initial capital/inventory.
 
-    Emits: StrategyCreated, StrategyVersionCreated, StrategyActivated,
-           and optionally CapitalCredited, InventoryBootstrapped and
-           InventoryBootstrapMarked.
+    Emits: StrategyCreated, StrategyVersionCreated, then StrategyActivated -
+           or, with `start_paused`, StrategyPaused(reason="created_paused")
+           so it places nothing until the user resumes it - and optionally
+           CapitalCredited, InventoryBootstrapped and InventoryBootstrapMarked.
     Returns: {strategy_id, strategy_version_id}
 
     `bootstrap_mark` carries the market price of the starting position,
@@ -162,9 +172,7 @@ def create_strategy(
     if not name or not name.strip():
         raise CommandError("Strategy name is required")
 
-    missing = REQUIRED_PARAMETERS - parameters.keys()
-    if missing:
-        raise CommandError(f"Missing required parameters: {missing}")
+    check_parameters(parameters)
 
     has_inventory = (
         initial_inventory is not None
@@ -190,10 +198,17 @@ def create_strategy(
           payload={"parameters": parameters, "previous_version_id": None},
           envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
 
-    # 3. StrategyActivated
-    _emit(db_path, event_type="StrategyActivated",
-          payload={},
-          envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
+    # 3. StrategyActivated, or held. The projection does not treat a created
+    # strategy as runnable until it is activated, so the paused path never
+    # passes through a state the scheduler would pick up.
+    if start_paused:
+        _emit(db_path, event_type="StrategyPaused",
+              payload={"reason": "created_paused"},
+              envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
+    else:
+        _emit(db_path, event_type="StrategyActivated",
+              payload={},
+              envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
 
     # 4. CapitalCredited (if capital > 0)
     if initial_capital_eur > 0:
@@ -269,7 +284,10 @@ def create_version(
     """
     Create a new version for an existing strategy.
 
-    Emits: StrategyVersionCreated, StrategyActivated.
+    Emits: StrategyVersionCreated, then StrategyActivated only if the strategy
+    was already active. A paused strategy stays paused: an edit is not a
+    resume, and treating it as one would put a strategy paused for going live
+    or for recovery back to trading without anyone pressing Resume.
     Returns: {strategy_version_id}
     """
     state = _get_strategy_state(db_path, strategy_id)
@@ -278,9 +296,7 @@ def create_version(
     if state["status"] == "archived":
         raise CommandError("Cannot create version for archived strategy")
 
-    missing = REQUIRED_PARAMETERS - parameters.keys()
-    if missing:
-        raise CommandError(f"Missing required parameters: {missing}")
+    check_parameters(parameters)
 
     previous_version_id = state.get("active_version_id")
     version_id = str(uuid.uuid4())
@@ -290,10 +306,13 @@ def create_version(
           payload={"parameters": parameters, "previous_version_id": previous_version_id},
           envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
 
-    # 2. StrategyActivated
-    _emit(db_path, event_type="StrategyActivated",
-          payload={},
-          envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
+    # 2. StrategyActivated - only for a strategy that was already running.
+    # The projection takes the new version from StrategyVersionCreated, so a
+    # paused strategy picks up its new settings without being resumed.
+    if state["status"] == "active":
+        _emit(db_path, event_type="StrategyActivated",
+              payload={},
+              envelope={"strategy_id": strategy_id, "strategy_version_id": version_id})
 
     # Update projections
     from datetime import datetime, timezone

@@ -1,0 +1,429 @@
+{
+  "_comment": "Shared by tests/domain/test_strategy_params.py and frontend strategyParamsFormHelpers.test.ts. A case marked server_only is one the form cannot produce through its own controls, so only the engine is expected to flag it; every other case must get the same verdict, field for field, from both validators.",
+  "cases": [
+    {
+      "name": "baseline strategy",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "buy-only (sell_eur 0)",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 0
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "sell-only (buy_eur 0)",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 0,
+        "sell_eur": 10
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "fractional thresholds and amounts",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 0.5,
+        "sell_rise_pct": 12.25,
+        "buy_eur": 7.5,
+        "sell_eur": 10
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "min position, cooldown and reset toggle",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "min_position_units": 0,
+        "cooldown_periods": 3,
+        "cooldown_reset_on_opposite": false
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "RSI enabled with thresholds",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "rsi_period": 14,
+        "rsi_max_for_buy": 30,
+        "rsi_min_for_sell": 70
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "RSI thresholds at the 0 and 100 bounds",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "rsi_period": 2,
+        "rsi_max_for_buy": 0,
+        "rsi_min_for_sell": 100
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "zero buy threshold",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 0,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "buy_drop_pct"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "negative sell threshold",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": -1,
+        "buy_eur": 10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "sell_rise_pct"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "negative buy amount",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": -10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "buy_eur"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "missing sell amount",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10
+      },
+      "invalid_fields": [
+        "sell_eur"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "both sides disabled",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 0,
+        "sell_eur": 0
+      },
+      "invalid_fields": [
+        "buy_eur"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "negative min position",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "min_position_units": -1
+      },
+      "invalid_fields": [
+        "min_position_units"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "negative cooldown",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "cooldown_periods": -2
+      },
+      "invalid_fields": [
+        "cooldown_periods"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "RSI period too short",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "rsi_period": 1,
+        "rsi_max_for_buy": 30,
+        "rsi_min_for_sell": 70
+      },
+      "invalid_fields": [
+        "rsi_period"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "RSI enabled without thresholds",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "rsi_period": 14
+      },
+      "invalid_fields": [
+        "rsi_max_for_buy",
+        "rsi_min_for_sell"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "RSI threshold above 100",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "rsi_period": 14,
+        "rsi_max_for_buy": 900,
+        "rsi_min_for_sell": 70
+      },
+      "invalid_fields": [
+        "rsi_max_for_buy"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "several errors reported together",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": -5,
+        "sell_rise_pct": 0,
+        "buy_eur": 10
+      },
+      "invalid_fields": [
+        "buy_drop_pct",
+        "sell_eur",
+        "sell_rise_pct"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "unknown keys pass through",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "product_id": "BTC-EUR",
+        "price_increment": "0.01"
+      },
+      "invalid_fields": [],
+      "server_only": false
+    },
+    {
+      "name": "unsupported timeframe",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "5m",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "timeframe"
+      ],
+      "server_only": true
+    },
+    {
+      "name": "missing symbol",
+      "params": {
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "symbol"
+      ],
+      "server_only": true
+    },
+    {
+      "name": "boolean where a number belongs",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": true,
+        "sell_eur": 10
+      },
+      "invalid_fields": [
+        "buy_eur"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "non-numeric amount",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": "ten"
+      },
+      "invalid_fields": [
+        "sell_eur"
+      ],
+      "server_only": false
+    },
+    {
+      "name": "fractional cooldown",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "cooldown_periods": 1.5
+      },
+      "invalid_fields": [
+        "cooldown_periods"
+      ],
+      "server_only": true
+    },
+    {
+      "name": "reset toggle not a boolean",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "cooldown_periods": 2,
+        "cooldown_reset_on_opposite": "yes"
+      },
+      "invalid_fields": [
+        "cooldown_reset_on_opposite"
+      ],
+      "server_only": true
+    },
+    {
+      "name": "negative sell margin",
+      "params": {
+        "symbol": "BTC-EUR",
+        "exchange": "bitvavo",
+        "timeframe": "1d",
+        "buy_drop_pct": 5,
+        "sell_rise_pct": 5,
+        "buy_eur": 10,
+        "sell_eur": 10,
+        "min_sell_margin_pct": -0.5
+      },
+      "invalid_fields": [
+        "min_sell_margin_pct"
+      ],
+      "server_only": true
+    }
+  ]
+}
