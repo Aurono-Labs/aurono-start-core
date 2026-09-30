@@ -5,7 +5,6 @@ def test_domain_surface_is_closed():
         "types",
         "reasons",
         "math",
-        "sizing",
         "strategy_eval",
         "decision_outcomes",
         "decision_builder",
