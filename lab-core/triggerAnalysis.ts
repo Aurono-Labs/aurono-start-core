@@ -111,7 +111,7 @@ export interface TriggerAnalysisResult {
   // Capital safety
   maxNetBuys: number;
   theoreticalEurRequired: number;
-  peakEurDrawdown: number;
+  peakEurDeployed: number;
   capitalSafe: boolean;
 
   // Streaks
@@ -462,7 +462,7 @@ export function runTriggerSimulation(
   }
 
   const theoreticalEurRequired = maxSignalNetBuys * buyEur;
-  const peakEurDrawdown = allocatedEur - minFreeEur;
+  const peakEurDeployed = allocatedEur - minFreeEur;
 
   return {
     buyThresholdPct,
@@ -484,7 +484,7 @@ export function runTriggerSimulation(
     holdCount,
     maxNetBuys: maxSignalNetBuys,
     theoreticalEurRequired,
-    peakEurDrawdown,
+    peakEurDeployed,
     capitalSafe: allocatedEur >= theoreticalEurRequired,
     maxBuyStreakBeforeSell,
     maxSellStreakBeforeBuy,
@@ -549,10 +549,10 @@ export function suggestAdjustments(
   if (
     allocatedEur != null && allocatedEur > 0 &&
     result.capitalSafe &&
-    result.peakEurDrawdown / allocatedEur < 0.6 &&
+    result.peakEurDeployed / allocatedEur < 0.6 &&
     result.buyExecuted > 0 // only suggest if the strategy did trade
   ) {
-    const deployedPct = Math.round((result.peakEurDrawdown / allocatedEur) * 100);
+    const deployedPct = Math.round((result.peakEurDeployed / allocatedEur) * 100);
     const hasBuySigmaSuggestion = suggestions.some((s) => s.parameter === "buySigma");
 
     if (!hasBuySigmaSuggestion) {
@@ -604,7 +604,7 @@ function emptyResult(
     holdCount: 0,
     maxNetBuys: 0,
     theoreticalEurRequired: 0,
-    peakEurDrawdown: 0,
+    peakEurDeployed: 0,
     capitalSafe: true,
     maxBuyStreakBeforeSell: 0,
     maxSellStreakBeforeBuy: 0,
@@ -694,6 +694,50 @@ export function computeEquityCurve(
   }
 
   return { curve, dcaUnits, holdUnits };
+}
+
+// ── Worst dip ──
+
+export interface WorstDip {
+  /** Largest peak-to-trough fall, in EUR (positive number). */
+  dipEur: number;
+  /** That fall as a fraction of its own peak (0-1). */
+  dipPct: number;
+  peakTs: number;
+  troughTs: number;
+}
+
+/**
+ * Largest peak-to-trough fall in a value series, or null if it never falls.
+ *
+ * Mirrors aurono/analytics/statistics.py::max_drawdown line for line (the
+ * strategy card's "Worst dip"): the dip chosen is the largest EUR drop, and
+ * its percentage is measured from that drop's own peak. Pinned by the same
+ * reference series in both test suites.
+ */
+export function computeWorstDip(
+  points: { timestamp_ms: number; value: number }[],
+): WorstDip | null {
+  if (points.length === 0) return null;
+
+  let peakVal = points[0].value;
+  let peakTs = points[0].timestamp_ms;
+  let worst: WorstDip | null = null;
+
+  for (const p of points) {
+    if (p.value > peakVal) {
+      peakVal = p.value;
+      peakTs = p.timestamp_ms;
+    }
+    if (peakVal > 0) {
+      const dipEur = peakVal - p.value;
+      if (dipEur > (worst?.dipEur ?? 0)) {
+        worst = { dipEur, dipPct: dipEur / peakVal, peakTs, troughTs: p.timestamp_ms };
+      }
+    }
+  }
+
+  return worst;
 }
 
 export interface EquityCurveResult {

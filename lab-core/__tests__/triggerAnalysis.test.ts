@@ -7,6 +7,7 @@ import {
   estimateUndersizedSides,
   checkRsiConfig,
   sellBelowRawAcb,
+  computeWorstDip,
   type TriggerAnalysisParams,
   type CandleRecord,
 } from "../triggerAnalysis";
@@ -305,7 +306,7 @@ describe("suggestAdjustments", () => {
     });
     expect(result.buyExecuted).toBeGreaterThan(0);
     // Capital should be mostly idle — peak deployed << 40%
-    expect(result.peakEurDrawdown / 10000).toBeLessThan(0.4);
+    expect(result.peakEurDeployed / 10000).toBeLessThan(0.4);
     const suggestions = suggestAdjustments(result, 0.5, 0.5, 10000, 10);
     // Should suggest lowering buySigma or raising buyEur
     const hasBuySigma = suggestions.some((s) => s.parameter === "buySigma" && s.suggested < 0.5);
@@ -915,5 +916,48 @@ describe("RSI gate in runTriggerSimulation", () => {
     const lastRow = result.rows[result.rows.length - 1];
     expect(lastRow.action).toBe("BUY_EXECUTED");
     expect(result.buyIgnoredRsi).toBe(0);
+  });
+});
+
+describe("computeWorstDip", () => {
+  const series = (values: number[]) => values.map((value, i) => ({ timestamp_ms: i, value }));
+
+  it("returns null for a rising series", () => {
+    expect(computeWorstDip(series([100, 110, 120, 130]))).toBeNull();
+    expect(computeWorstDip([])).toBeNull();
+  });
+
+  it("finds the largest EUR drop, not the largest percent drop", () => {
+    // 100 -> 50 is -50% but only EUR 50; 1000 -> 800 is -20% but EUR 200.
+    const dip = computeWorstDip(series([100, 50, 1000, 800]));
+    expect(dip?.dipEur).toBe(200);
+    expect(dip?.dipPct).toBeCloseTo(0.2, 10);
+  });
+
+  it("measures percent from that drop's own peak", () => {
+    const dip = computeWorstDip(series([1000, 1250, 1000]));
+    expect(dip?.dipEur).toBe(250);
+    expect(dip?.dipPct).toBeCloseTo(0.2, 10); // 250 / 1250, not 250 / 1000
+  });
+
+  it("reports peak and trough timestamps", () => {
+    const dip = computeWorstDip(series([1000, 1050, 800, 1100, 900]));
+    expect(dip).toEqual({ dipEur: 250, dipPct: 250 / 1050, peakTs: 1, troughTs: 2 });
+  });
+
+  it("ignores a new high after the trough", () => {
+    const dip = computeWorstDip(series([1000, 600, 2000, 1900]));
+    expect(dip?.dipEur).toBe(400);
+    expect(dip?.troughTs).toBe(1);
+  });
+
+  it("matches the max_drawdown reference series", () => {
+    // Same series and expectations as
+    // tests/analytics/test_statistics.py::test_max_drawdown_matches_reference_series
+    const dip = computeWorstDip(series([1000, 1200, 900, 1300, 1250, 1500, 1050, 1400]));
+    expect(dip?.dipEur).toBe(450);
+    expect(dip?.dipPct).toBeCloseTo(0.3, 10);
+    expect(dip?.peakTs).toBe(5);
+    expect(dip?.troughTs).toBe(6);
   });
 });

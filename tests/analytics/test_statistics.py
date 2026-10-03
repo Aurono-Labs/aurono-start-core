@@ -156,3 +156,16 @@ def test_max_drawdown_pct():
     dd = max_drawdown(series)
 
     assert dd["max_drawdown_pct"] == Decimal("0.2")
+
+
+def test_max_drawdown_matches_reference_series():
+    """Same series and expectations as lab-core/__tests__/triggerAnalysis.test.ts
+    ("computeWorstDip matches the max_drawdown reference series"), so the
+    Lab's worst dip and the strategy card's cannot drift apart."""
+    values = [1000, 1200, 900, 1300, 1250, 1500, 1050, 1400]
+    dd = max_drawdown([(i, v) for i, v in enumerate(values)])
+
+    assert dd["max_drawdown_eur"] == Decimal("450")
+    assert dd["max_drawdown_pct"] == Decimal("0.3")
+    assert dd["peak_timestamp"] == 5
+    assert dd["trough_timestamp"] == 6
