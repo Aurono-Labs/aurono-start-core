@@ -14,19 +14,21 @@ What's *not* here — exchange adapters, credential handling, the UI, deployment
 
 | Path | What it is |
 |---|---|
-| `aurono/domain/` | Strategy evaluation, decision/rejection logic, core types |
+| `aurono/domain/` | Strategy evaluation, decision/rejection logic, core types, indicators (RSI) |
 | `aurono/events/` | Event schemas, emit, append-only store |
 | `aurono/ledger/` | Capital/inventory ledger, settlement, state rebuild |
 | `aurono/analytics/` | P&L, trade statistics, milestones |
 | `aurono/execution/sizing/` | Order sizing engine |
 | `aurono/execution/commands.py`, `events.py` | Execution contract types |
+| `aurono/db/connect.py` | SQLite connection/pragma helper (generic infra, no business logic) |
+| `aurono/projections/event_groups.py`, `incremental.py`, `reducers.py`, `store_sqlite.py` | Incremental read-model updates applied when an event is emitted |
 | `aurono/reports/generator.py` | Report data aggregation (not rendering) |
-| `lab-core/` | Lab Simulate math — sigma thresholds, trigger simulation, equity curve, benchmark comparison |
+| `lab-core/` | Lab Simulate math — sigma thresholds, trigger simulation, indicators, equity curve, benchmark comparison |
 | `tests/` | The tests that pin all of the above |
 
 ## How this repo is kept up to date
 
-This is a **content mirror**, updated by a sync job from the private monorepo where Aurono Start is developed. It carries no history from that repo — each sync is a fresh snapshot, so commit messages, branches, and unrelated work never cross over. A standing test (`tests/domain/test_import_boundaries.py`) in the private repo guarantees every file mirrored here never imports anything from the proprietary layers (exchange adapters, credentials, UI, deploy tooling) — the boundary is enforced by CI, not just by convention.
+This is a **content mirror**, updated by a sync job from the private monorepo where Aurono Start is developed. It carries no history from that repo — each sync is a fresh snapshot, so commit messages, branches, and unrelated work never cross over. A standing test (`tests/domain/test_import_boundaries.py`) in the private repo guarantees every file mirrored here never imports anything from the proprietary layers (exchange adapters, credentials, UI, deploy tooling) — the boundary is enforced by CI, not just by convention. A second test checks that everything mirrored here imports only what is mirrored here, so the code runs on its own.
 
 ## License
 
