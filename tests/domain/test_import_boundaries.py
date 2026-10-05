@@ -37,6 +37,10 @@ OPEN_DESIGNATED_FILES = [
     "aurono/execution/events.py",
     "aurono/reports/generator.py",
     "aurono/db/connect.py",
+    "aurono/projections/event_groups.py",
+    "aurono/projections/incremental.py",
+    "aurono/projections/reducers.py",
+    "aurono/projections/store_sqlite.py",
 ]
 
 # Prefixes that must never appear anywhere in an open-designated module's
