@@ -28,5 +28,6 @@ RSI_NOT_OVERBOUGHT         = "RSI_NOT_OVERBOUGHT"
 
 # ---- Adapter-mapped ----
 EXCHANGE_UNAVAILABLE       = "EXCHANGE_UNAVAILABLE"   # call to exchange failed mid-flight
+PLACEMENT_NOT_FOUND        = "PLACEMENT_NOT_FOUND"    # placement response lost; exchange confirmed no such order
 EXCHANGE_UNREACHABLE       = "EXCHANGE_UNREACHABLE"   # pre-flight gate: health monitor reports exchange down
 

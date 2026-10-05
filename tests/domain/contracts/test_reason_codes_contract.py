@@ -9,6 +9,7 @@ def test_reason_codes_are_canonical():
         "NO_ACB",
         "BELOW_ACB",
         "EXCHANGE_UNAVAILABLE",
+        "PLACEMENT_NOT_FOUND",
         "EXCHANGE_UNREACHABLE",
         "BUY_TRIGGERED",
         "SELL_TRIGGERED",
