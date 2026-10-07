@@ -15,6 +15,13 @@
 
 import { rsi } from "./indicators";
 
+/** A count for a sentence, with comma thousands: 2,410. Same locale as the
+ *  frontend's formatNumber (en-IE), kept local so this module stays free of
+ *  frontend imports. */
+function formatCount(n: number): string {
+  return n.toLocaleString("en-IE");
+}
+
 // ── Types ──
 
 export interface CandleRecord {
@@ -518,7 +525,7 @@ export function suggestAdjustments(
       parameter: "buySigma",
       current: currentBuySigma,
       suggested: Math.round((currentBuySigma + 0.5) * 10) / 10,
-      reason: `${result.buyIgnoredNoCapital} of ${totalBuySignals} buy signals were skipped because capital ran out. Making buys less sensitive reduces how often the strategy tries to buy.`,
+      reason: `${formatCount(result.buyIgnoredNoCapital)} of ${formatCount(totalBuySignals)} buy signals were skipped because capital ran out. Making buys less sensitive reduces how often the strategy tries to buy.`,
     });
   }
 
@@ -528,7 +535,7 @@ export function suggestAdjustments(
       parameter: "sellSigma",
       current: currentSellSigma,
       suggested: Math.round((currentSellSigma + 0.5) * 10) / 10,
-      reason: `${result.sellIgnoredNoInventory} of ${totalSellSignals} sell signals were skipped because there was nothing to sell yet. Making sells less sensitive adds patience.`,
+      reason: `${formatCount(result.sellIgnoredNoInventory)} of ${formatCount(totalSellSignals)} sell signals were skipped because there was nothing to sell yet. Making sells less sensitive adds patience.`,
     });
   }
 

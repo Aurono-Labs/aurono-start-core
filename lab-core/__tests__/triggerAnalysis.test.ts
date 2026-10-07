@@ -276,6 +276,21 @@ describe("suggestAdjustments", () => {
     expect(buySuggestion!.suggested).toBeGreaterThan(0.1);
   });
 
+  it("suggestion reason groups thousands", () => {
+    const base = runTriggerSimulation({
+      candles: makeCandles([100, 90, 81, 73, 66, 59, 53, 48, 43, 39]),
+      buySigma: 0.1,
+      sellSigma: 5,
+      buyEur: 100,
+      sellEur: 100,
+      allocatedEur: 200,
+    });
+    // A long hourly window: counts in the thousands.
+    const result = { ...base, buyExecuted: 580, buyIgnoredNoCapital: 1830 };
+    const buySuggestion = suggestAdjustments(result, 0.1, 5).find((s) => s.parameter === "buySigma");
+    expect(buySuggestion!.reason).toMatch(/^1,830 of 2,410 buy signals were skipped/);
+  });
+
   it("suggests raising SELL sigma when many sells ignored (no inventory)", () => {
     const risingCandles = makeCandles([100, 110, 121, 133, 146, 161, 177, 195]);
     const result = runTriggerSimulation({
