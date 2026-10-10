@@ -46,6 +46,9 @@ class StrategyReport:
     # True if any StrategyCreated/Activated/Paused/Archived event fired in the
     # period — used by the digest classifier to always surface the strategy.
     state_changes_in_period: bool = False
+    # Set by classify_strategies() after selection: "activity", "state_change",
+    # or "mover". None until classified (e.g. for collapsed strategies).
+    highlight_reason: Optional[str] = None
 
 
 @dataclass
@@ -107,6 +110,21 @@ class ReportData:
     trades: List[TradeEntry] = field(default_factory=list)
     blocked_signals: List[BlockedSignal] = field(default_factory=list)
     eval_health: Optional[EvalHealth] = None
+
+
+# Decision reason codes the report lists as blocked signals, with the side the
+# signal was on. A reason missing here is dropped from the report silently, so
+# a new HOLD reason for a fired trigger belongs here too.
+BLOCKED_REASON_ACTIONS: Dict[str, Optional[str]] = {
+    "CAPITAL_INSUFFICIENT": "BUY",
+    "INVENTORY_INSUFFICIENT": "SELL",
+    "BELOW_ACB": "SELL",
+    "MIN_POSITION_BREACH": "SELL",
+    "COOLDOWN_ACTIVE": None,  # could be either
+    "NO_ACB": "SELL",
+    "RSI_NOT_OVERSOLD": "BUY",
+    "RSI_NOT_OVERBOUGHT": "SELL",
+}
 
 
 def _get_mark_price(conn: sqlite3.Connection, strategy_id: str, symbol: str) -> Optional[Decimal]:
@@ -330,14 +348,7 @@ def generate_report(
         ))
 
     # Blocked signals: decision events where a buy/sell signal was blocked
-    blocked_reasons = {
-        "CAPITAL_INSUFFICIENT": "BUY",
-        "INVENTORY_INSUFFICIENT": "SELL",
-        "BELOW_ACB": "SELL",
-        "SELL_BELOW_MIN_POSITION": "SELL",
-        "COOLDOWN_ACTIVE": None,  # could be either
-        "NO_ACB": "SELL",
-    }
+    blocked_reasons = BLOCKED_REASON_ACTIONS
     blocked_rows = conn.execute(
         """
         SELECT e.timestamp_utc, e.strategy_id, e.symbol, e.payload_json,
