@@ -542,11 +542,7 @@ def _extend_strategy_series_to_last_candle(
     if not series or not candles:
         return series
 
-    status_row = conn.execute(
-        "SELECT status FROM strategy_state_projection WHERE strategy_id = ?",
-        (strategy_id,),
-    ).fetchone()
-    if status_row is not None and status_row["status"] == "archived":
+    if _is_archived(conn, strategy_id):
         return series
 
     last_candle_ms = int(candles[-1][0])
@@ -668,7 +664,14 @@ def compute_benchmark_comparison(
     """
     Compose the three-line benchmark series for a strategy. Empty arrays
     are returned for series that cannot be computed (e.g. no candles, no
-    injected capital).
+    money ever put in).
+
+    A base at or below zero is not one of those cases. A strategy whose
+    withdrawals have caught up with or passed what was put in still has dated
+    flows, and both comparators already take a withdrawal out of the position
+    on its own date, so the question "what would the same money have done"
+    has an answer. `base_capital_eur` is reported as the negative number it
+    is; the caller words it.
 
     `candles_all` must already be the full [timestamp_ms, open, high, low,
     close, volume] history for the strategy's (symbol, timeframe, exchange)
@@ -698,7 +701,16 @@ def compute_benchmark_comparison(
 
     strategy_series = _strategy_value_series(conn, strategy_id)
 
-    if base <= 0 or not candles:
+    flows = dated_capital_flows(conn, strategy_id)
+    has_inflow = any(amount > 0 for _, amount in flows)
+
+    # An archived strategy that took everything back out keeps no comparison:
+    # its own line stops at the archive while the benchmark lines would run on
+    # to today, which is the unaligned pair the note in
+    # `_extend_strategy_series_to_last_candle` leaves open.
+    archived_and_emptied = base <= 0 and _is_archived(conn, strategy_id)
+
+    if not has_inflow or not candles or archived_and_emptied:
         return BenchmarkSeries(
             strategy_id=strategy_id,
             symbol=ctx.symbol,
@@ -717,7 +729,6 @@ def compute_benchmark_comparison(
         conn, strategy_id, strategy_series, candles
     )
 
-    flows = dated_capital_flows(conn, strategy_id)
     hold_series = compute_buy_and_hold_series(candles, base, flows=flows)
     dca_series = compute_dca_series(candles, base, interval, flows=flows)
 
@@ -735,6 +746,14 @@ def compute_benchmark_comparison(
         buy_and_hold=hold_series,
         round_trips=_round_trip_count(conn, strategy_id, ctx.symbol),
     )
+
+
+def _is_archived(conn: sqlite3.Connection, strategy_id: str) -> bool:
+    row = conn.execute(
+        "SELECT status FROM strategy_state_projection WHERE strategy_id = ?",
+        (strategy_id,),
+    ).fetchone()
+    return row is not None and row["status"] == "archived"
 
 
 def _round_trip_count(conn: sqlite3.Connection, strategy_id: str, symbol: str) -> int:
