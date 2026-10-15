@@ -14,6 +14,7 @@ from aurono.projections.reducers import (
     reduce_inventory_balance,
     reduce_trade_state,
     reduce_portfolio_snapshot,
+    bootstrap_mark_snapshot,
 )
 from aurono.projections.store_sqlite import (
     upsert_strategy_state,
@@ -85,6 +86,13 @@ def apply_event_to_projections(
     # visible in the graph (instead of waiting for the next evaluation).
     if et in ("CapitalCredited", "CapitalDebited"):
         snapshot = _capital_event_snapshot(projection_db_path, event)
+        if snapshot:
+            upsert_portfolio_snapshot(projection_db_path, snapshot)
+
+    # A starting position's value, so the strategy's history does not read as
+    # cash only until its first evaluation (never, for one created on hold).
+    if et == "InventoryBootstrapMarked":
+        snapshot = _bootstrap_mark_snapshot(projection_db_path, event)
         if snapshot:
             upsert_portfolio_snapshot(projection_db_path, snapshot)
 
@@ -172,6 +180,54 @@ def _capital_event_snapshot(
         "portfolio_value_eur": portfolio_val,
         "unrealized_pnl_eur": unrealized,
     }
+
+
+def _bootstrap_mark_snapshot(
+    db_path: Path, event: Dict[str, Any]
+) -> Dict[str, Any] | None:
+    """
+    Snapshot for InventoryBootstrapMarked, or None once the strategy has been
+    evaluated. Every DecisionObserved snapshot carries an action and no other
+    snapshot does, so "no row with an action" means "never evaluated". That is
+    what keeps a mark backfilled months later from adding a stale point.
+    """
+    import json
+    import sqlite3
+    from decimal import Decimal
+    from aurono.db.connect import connect as db_connect
+    from aurono.projections.store_sqlite import load_portfolio_snapshots
+
+    strategy_id = event["strategy_id"]
+    snapshots = load_portfolio_snapshots(db_path, strategy_id)
+    if any(s.get("action") is not None for s in snapshots):
+        return None
+
+    acb_price = None
+    conn = db_connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT payload_json FROM events WHERE event_id = ?",
+            (event["payload"]["bootstrap_event_id"],),
+        ).fetchone()
+        if row:
+            raw = json.loads(row[0]).get("acb_price")
+            acb_price = Decimal(str(raw)) if raw is not None else None
+    except sqlite3.OperationalError:
+        # Projection-only DB without an events table
+        pass
+    finally:
+        conn.close()
+
+    symbol, timeframe = ("", "")
+    if not snapshots:
+        symbol, timeframe = _lookup_strategy_symbol_timeframe(db_path, strategy_id)
+    return bootstrap_mark_snapshot(
+        snapshots[-1] if snapshots else None,
+        event,
+        symbol=symbol or event.get("symbol") or "",
+        timeframe=timeframe,
+        acb_price=acb_price,
+    )
 
 
 def _lookup_strategy_symbol_timeframe(db_path: Path, strategy_id: str) -> tuple:

@@ -344,6 +344,63 @@ def reduce_portfolio_snapshot(
     }
 
 
+def bootstrap_mark_snapshot(
+    last: Dict[str, Any] | None,
+    event: Dict[str, Any],
+    *,
+    symbol: str,
+    timeframe: str,
+    acb_price: Decimal | None,
+) -> Dict[str, Any]:
+    """
+    Snapshot for a strategy's starting position, built from InventoryBootstrapMarked.
+
+    Without it the first snapshot of a strategy created with cash and holdings
+    is the CapitalCredited one, which carries the cash alone, and it stays the
+    strategy's recorded value until the first evaluation. A strategy created on
+    hold is never evaluated, so its holdings would be missing indefinitely.
+
+    Only for a strategy that has never been evaluated: the caller checks that.
+    Marks backfilled long after the strategy started trading must not add a
+    point carrying the starting position at the backfill date.
+
+    Cash comes from `last` (the CapitalCredited snapshot, if any); the units and
+    price come from the mark, never from `acb_price`, which is a sell floor.
+    """
+    payload = _payload(event)
+    units = Decimal(str(payload["units"]))
+    mark_price = Decimal(str(payload["mark_price"]))
+
+    def _dec(key: str) -> Decimal:
+        return Decimal(str((last or {}).get(key) or 0))
+
+    free_eur = _dec("free_eur")
+    reserved_eur = _dec("reserved_eur")
+    portfolio_val = free_eur + reserved_eur + units * mark_price
+    unrealized = (
+        units * (mark_price - acb_price)
+        if acb_price and units > 0
+        else Decimal("0")
+    )
+
+    return {
+        "strategy_id": event.get("strategy_id"),
+        "symbol": (last or {}).get("symbol") or symbol,
+        "timeframe": (last or {}).get("timeframe") or timeframe,
+        "timestamp_utc": event["timestamp_utc"],
+        "action": None,
+        "reason_code": None,
+        "close_price": mark_price,
+        "free_eur": free_eur,
+        "asset_units": units,
+        "acb_price": acb_price,
+        "reserved_eur": reserved_eur,
+        "reserved_units": Decimal("0"),
+        "portfolio_value_eur": portfolio_val,
+        "unrealized_pnl_eur": unrealized,
+    }
+
+
 # ============================================================
 # Helpers
 # ============================================================
